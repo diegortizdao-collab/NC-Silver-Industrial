@@ -244,6 +244,9 @@ function Bloque1({ registros, recargarRegistros }) {
         cargadoPorNombre: cargador ? cargador.nombre : null,
         operarioLegajo: operarioSel && operarioSel.legajo ? operarioSel.legajo : null,
       });
+      // Primer snapshot del Q.21 (todavía sin Bloque 2) — así el dashboard ya tiene
+      // un documento para linkear desde el momento en que se carga la NC.
+      guardarSnapshotWord(nextNumero, armarDatosWord(form, nextNumero, null), false);
       setForm(emptyForm);
       setGuardadoOk(true);
       await cargarProximoNumero();
@@ -579,7 +582,7 @@ function base64ToUint8Array(base64) {
   return bytes;
 }
 
-async function generarWordNC(data, nombreArchivo) {
+async function generarWordBlobNC(data) {
   const [{ default: PizZip }, { default: Docxtemplater }] = await Promise.all([
     import("https://esm.sh/pizzip@3.1.6"),
     import("https://esm.sh/docxtemplater@3.69.3"),
@@ -588,11 +591,14 @@ async function generarWordNC(data, nombreArchivo) {
   const zip = new PizZip(bytes);
   const doc = new Docxtemplater(zip, { paragraphLoop: true, linebreaks: true });
   doc.render(data);
-  const out = doc.getZip().generate({
+  return doc.getZip().generate({
     type: "blob",
     mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   });
-  const url = URL.createObjectURL(out);
+}
+
+function descargarBlob(blob, nombreArchivo) {
+  const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
   a.download = nombreArchivo;
@@ -600,6 +606,36 @@ async function generarWordNC(data, nombreArchivo) {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+
+async function generarWordNC(data, nombreArchivo) {
+  const blob = await generarWordBlobNC(data);
+  descargarBlob(blob, nombreArchivo);
+}
+
+// Guarda (o pisa) el snapshot Q.21 de esta NC en el bucket R2, vía el Worker.
+// Es el registro "oficial" que se linkea desde el dashboard Q.11 para el auditor.
+// No bloqueante: si falla, no impide guardar la NC — solo se avisa por consola.
+// congelar=true fija el documento para siempre (se llama cuando el estado pasa a "Cerrada").
+async function guardarSnapshotWord(numero, datos, congelar) {
+  try {
+    const blob = await generarWordBlobNC(datos);
+    const url = `${API_BASE}/nc/${numero}/documento${congelar ? "?congelar=1" : ""}`;
+    const res = await fetch(url, {
+      method: "PUT",
+      headers: { "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document" },
+      body: blob,
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      console.warn("No se pudo guardar el snapshot del Word:", data.error || res.status);
+      return false;
+    }
+    return true;
+  } catch (e) {
+    console.warn("No se pudo generar/guardar el snapshot del Word:", e.message);
+    return false;
+  }
 }
 
 function armarDatosWord(form, numero, b2) {
@@ -763,6 +799,11 @@ function Bloque2({ registros, recargarRegistros }) {
           }
         }
       }
+      // Regenera (pisa) el snapshot Q.21 con los datos actuales del Bloque 2.
+      // Si el estado quedó "Cerrada", se congela: no se vuelve a sobrescribir después.
+      const registroBase = registros.find((r) => String(r.numero) === String(b2.numeroNC)) || {};
+      const numeroReal = registroBase.numeroMostrar || b2.numeroNC;
+      guardarSnapshotWord(b2.numeroNC, armarDatosWord(registroBase, numeroReal, b2), b2.estado === "Cerrada");
       setGuardadoOkB2(true);
       await recargarRegistros();
     } catch (e) {
