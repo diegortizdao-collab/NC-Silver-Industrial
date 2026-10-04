@@ -15,6 +15,51 @@
 </head>
 <body>
 <div id="root"></div>
+<script>
+// ---- Acceso (mail autorizado + contraseña). El Worker valida; acá solo se guarda el token de sesión (12 hs).
+(function () {
+  var API = "https://nc-silver-api.diegortizdao.workers.dev/api";
+  var KEY = "sgc_nc_token";
+  function leer() { try { var t = JSON.parse(localStorage.getItem(KEY) || "null"); return t && t.expira > Date.now() ? t : null; } catch (e) { return null; } }
+  function guardar(t) { try { localStorage.setItem(KEY, JSON.stringify(t)); } catch (e) {} }
+  function borrar() { try { localStorage.removeItem(KEY); } catch (e) {} }
+  window.cerrarSesionNC = function () { borrar(); location.reload(); };
+  window.usuarioNC = function () { var t = leer(); return t ? t.email : null; };
+
+  var f0 = window.fetch.bind(window);
+  window.fetch = function (url, opts) {
+    if (typeof url === "string" && url.indexOf(API) === 0 && url.indexOf(API + "/login") !== 0) {
+      var t = leer(); opts = opts || {}; opts.headers = Object.assign({}, opts.headers || {});
+      if (t) opts.headers["Authorization"] = "Bearer " + t.token;
+      return f0(url, opts).then(function (r) { if (r.status === 401) { borrar(); location.reload(); } return r; });
+    }
+    return f0(url, opts);
+  };
+
+  if (leer()) return;
+  document.addEventListener("DOMContentLoaded", function () {
+    var root = document.getElementById("root"); if (root) root.style.display = "none";
+    var d = document.createElement("div");
+    d.style.cssText = "min-height:100vh;display:flex;align-items:center;justify-content:center;background:#f1f5f9;font-family:system-ui,sans-serif";
+    d.innerHTML = '<form id="nc-login" style="background:#fff;padding:28px;border-radius:12px;box-shadow:0 4px 20px rgba(0,0,0,.1);width:min(92vw,360px)">' +
+      '<h2 style="margin:0 0 4px;font-size:18px;color:#1e293b">SGC Silver Industrial</h2><p style="margin:0 0 16px;font-size:13px;color:#64748b">Acceso restringido. Ingresá con tu mail autorizado.</p>' +
+      '<input id="nc-mail" type="email" placeholder="Mail" autocomplete="username" required style="width:100%;box-sizing:border-box;padding:10px;margin-bottom:10px;border:1px solid #cbd5e1;border-radius:8px">' +
+      '<input id="nc-pass" type="password" placeholder="Contraseña" autocomplete="current-password" required style="width:100%;box-sizing:border-box;padding:10px;margin-bottom:10px;border:1px solid #cbd5e1;border-radius:8px">' +
+      '<button style="width:100%;padding:10px;border:0;border-radius:8px;background:#1e293b;color:#fff;font-size:15px;cursor:pointer">Ingresar</button>' +
+      '<p id="nc-err" style="color:#b91c1c;font-size:13px;min-height:18px;margin:10px 0 0"></p></form>';
+    document.body.appendChild(d);
+    d.querySelector("form").addEventListener("submit", function (e) {
+      e.preventDefault(); var err = d.querySelector("#nc-err"); err.textContent = "Verificando...";
+      f0(API + "/login", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: d.querySelector("#nc-mail").value, password: d.querySelector("#nc-pass").value }) })
+        .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+        .then(function (x) { if (!x.ok) { err.textContent = x.j.error || "No se pudo ingresar"; return; } guardar({ token: x.j.token, email: x.j.email, expira: x.j.expira }); location.reload(); })
+        .catch(function () { err.textContent = "No se pudo conectar con el servidor"; });
+    });
+  });
+})();
+</script>
+
 <script type="text/babel" data-presets="react">
 const { useState, useEffect } = React;
 
