@@ -30,8 +30,17 @@
   window.fetch = function (url, opts) {
     if (typeof url === "string" && url.indexOf(API) === 0 && url.indexOf(API + "/login") !== 0) {
       var t = leer(); opts = opts || {}; opts.headers = Object.assign({}, opts.headers || {});
-      if (t) opts.headers["Authorization"] = "Bearer " + t.token;
-      return f0(url, opts).then(function (r) { if (r.status === 401) { borrar(); location.reload(); } return r; });
+      // Sin sesión no se llama a la API (la app queda oculta detrás del login): evita el bucle de recargas.
+      if (!t) return Promise.reject(new Error("Sin sesión"));
+      opts.headers["Authorization"] = "Bearer " + t.token;
+      return f0(url, opts).then(function (r) {
+        if (r.status === 401) {
+          borrar();
+          var n = Number(sessionStorage.getItem("sgc_nc_reload") || 0);
+          if (Date.now() - n > 10000) { sessionStorage.setItem("sgc_nc_reload", String(Date.now())); location.reload(); }
+        }
+        return r;
+      });
     }
     return f0(url, opts);
   };
