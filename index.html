@@ -124,6 +124,8 @@ function mapNCFromApi(row) {
     fechaCumplimiento: row.fecha_cumplimiento || "",
     requiereAccion: row.requiere_accion || "",
     estado: row.estado || "Abierta",
+    clasificacion: row.clasificacion || "",
+    conDevolucion: row.con_devolucion === true ? "Sí" : row.con_devolucion === false ? "No" : "",
   };
 }
 
@@ -182,6 +184,16 @@ const MAQUINAS = ["1", "2", "3", "4", "6", "7", "8", "9", "10", "11", "12", "13"
 
 const TIPOS_INFORME = ["No conformidad", "Hallazgo de auditoría", "Op. de mejora"];
 const CATEGORIAS = ["Producto", "Proceso", "Proveedor", "Cliente", "Otros"];
+const TIPO_OM = "Op. de mejora";
+// Clasificación de las NC (PR.05 Rev. 6). Alimenta Quejas, Devoluciones y Fallas internas del Apéndice C.
+const CLASES_NC = ["Defectos x Control de Calidad", "Reclamos de Clientes", "Hallazgos de Auditoría", "Proveedores"];
+function sugerirClase(f) {
+  if (f.tipo === TIPO_OM) return "";
+  if (f.tipo === "Hallazgo de auditoría") return "Hallazgos de Auditoría";
+  if (f.categoria === "Cliente") return "Reclamos de Clientes";
+  if (f.categoria === "Proveedor") return "Proveedores";
+  return "Defectos x Control de Calidad";
+}
 const ESTADOS = ["Abierta", "En análisis", "En verificación", "Cerrada"];
 
 const emptyForm = {
@@ -201,6 +213,8 @@ const emptyForm = {
   cumplido: "",
   fechaCumplimiento: "",
   requiereAccion: "",
+  clasificacion: "",
+  conDevolucion: "",
 };
 
 const emptyBloque2 = {
@@ -248,24 +262,31 @@ function Bloque1({ registros, recargarRegistros }) {
   const [form, setForm] = useState(emptyForm);
   const [error, setError] = useState("");
   const [nextNumero, setNextNumero] = useState(null);
+  const [nextInterno, setNextInterno] = useState(null);
   const [guardando, setGuardando] = useState(false);
   const [guardadoOk, setGuardadoOk] = useState(false);
+  const esOM = form.tipo === TIPO_OM;
+  const claseEfectiva = esOM ? "" : form.clasificacion || sugerirClase(form);
 
   async function cargarProximoNumero() {
     try {
-      const data = await apiGet("/nc/proximo-numero");
+      // Cada tipo de informe tiene su propia numeración: las OM van aparte de las NC.
+      const data = await apiGet(`/nc/proximo-numero${esOM ? "?tipo=om" : ""}`);
       setNextNumero(data.siguiente);
+      setNextInterno(data.numeroInterno || data.siguiente);
     } catch (e) {
-      setError("No se pudo consultar el próximo número de NC: " + e.message);
+      setError("No se pudo consultar el próximo número: " + e.message);
     }
   }
 
   useEffect(() => {
+    setNextNumero(null);
     cargarProximoNumero();
-  }, []);
+  }, [esOM]);
 
   function update(field, value) {
-    setForm((f) => ({ ...f, [field]: value }));
+    // Al cambiar tipo o categoría vuelve a valer la clasificación sugerida
+    setForm((f) => ({ ...f, [field]: value, ...(field === "tipo" || field === "categoria" ? { clasificacion: "", conDevolucion: "" } : {}) }));
   }
 
   function validar() {
@@ -273,12 +294,13 @@ function Bloque1({ registros, recargarRegistros }) {
     for (const campo of requeridos) {
       if (!form[campo]) return false;
     }
+    if (claseEfectiva === "Reclamos de Clientes" && !form.conDevolucion) return false;
     return true;
   }
 
   async function handleSubmit() {
     if (!validar()) {
-      setError("Completá quién carga, producto, descripción, operario, máquina, OTI y disposición antes de guardar.");
+      setError("Completá quién carga, producto, descripción, operario, máquina, OTI y disposición antes de guardar" + (claseEfectiva === "Reclamos de Clientes" ? " (y si el reclamo tuvo devolución)." : "."));
       return;
     }
     if (!nextNumero) {
@@ -291,16 +313,18 @@ function Bloque1({ registros, recargarRegistros }) {
     try {
       const cargador = CARGADORES.find((c) => c.apellido === form.cargadoPor);
       const operarioSel = OPERARIOS.find((o) => o.nombre === form.operario);
-      await apiPost("/nc", {
+      const creada = await apiPost("/nc", {
         ...form,
-        numero: nextNumero,
+        clasificacion: claseEfectiva || null,
+        conDevolucion: claseEfectiva === "Reclamos de Clientes" ? form.conDevolucion === "Sí" : null,
+        numero: nextInterno,
         cargadoPorApellido: cargador ? cargador.apellido : null,
         cargadoPorNombre: cargador ? cargador.nombre : null,
         operarioLegajo: operarioSel && operarioSel.legajo ? operarioSel.legajo : null,
       });
       // Primer snapshot del Q.21 (todavía sin Bloque 2) — así el dashboard ya tiene
       // un documento para linkear desde el momento en que se carga la NC.
-      guardarSnapshotWord(nextNumero, armarDatosWord(form, nextNumero, null), false);
+      guardarSnapshotWord(creada.numero, armarDatosWord(form, creada.numero_original || creada.numero, null), false);
       setForm(emptyForm);
       setGuardadoOk(true);
       await cargarProximoNumero();
@@ -323,7 +347,7 @@ function Bloque1({ registros, recargarRegistros }) {
     setGenerando(true);
     try {
       const datos = armarDatosWord(form, nextNumero, null);
-      await generarWordNC(datos, `Q21_NC_${nextNumero}.docx`);
+      await generarWordNC(datos, `Q21_${esOM ? "OM" : "NC"}_${nextNumero}.docx`);
     } catch (e) {
       setError("No se pudo generar el Word: " + e.message);
     } finally {
@@ -335,8 +359,8 @@ function Bloque1({ registros, recargarRegistros }) {
     <div>
       <div className="bg-white rounded-lg border border-slate-200 p-5 space-y-5">
         <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-          <span className="text-sm font-medium text-slate-700">Nº de NC</span>
-          <span className="text-sm font-semibold text-slate-800">{nextNumero || "…"}</span>
+          <span className="text-sm font-medium text-slate-700">{esOM ? "Nº de OM" : "Nº de NC"}</span>
+          <span className="text-sm font-semibold text-slate-800">{nextNumero ? (esOM ? `OM-${nextNumero}` : nextNumero) : "…"}</span>
         </div>
 
         <div>
@@ -394,6 +418,50 @@ function Bloque1({ registros, recargarRegistros }) {
             ))}
           </div>
         </div>
+
+        {!esOM && (
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-2">
+              Clasificación de la NC <span className="text-xs font-normal text-slate-400">(sugerida según tipo y categoría; Calidad la confirma)</span>
+            </label>
+            <div className="flex flex-wrap gap-2">
+              {CLASES_NC.map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => update("clasificacion", c)}
+                  className={`px-3 py-1.5 rounded-md text-sm border ${
+                    claseEfectiva === c
+                      ? "bg-slate-800 text-white border-slate-800"
+                      : "bg-white text-slate-600 border-slate-300 hover:border-slate-400"
+                  }`}
+                >
+                  {c}
+                </button>
+              ))}
+            </div>
+            {claseEfectiva === "Reclamos de Clientes" && (
+              <div className="mt-3">
+                <label className="block text-sm font-medium text-slate-700 mb-1">¿Hubo devolución efectiva del producto?</label>
+                <div className="flex gap-2">
+                  {["Sí", "No"].map((v) => (
+                    <button
+                      key={v}
+                      type="button"
+                      onClick={() => update("conDevolucion", v)}
+                      className={`px-3 py-1.5 rounded-md text-sm border ${
+                        form.conDevolucion === v ? "bg-slate-800 text-white border-slate-800" : "bg-white text-slate-600 border-slate-300"
+                      }`}
+                    >
+                      {v}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-xs text-slate-400 mt-1">Devolución = el cliente devolvió físicamente el producto. Reposición o retrabajo en el cliente sin que vuelva el producto cuenta como "No".</p>
+              </div>
+            )}
+          </div>
+        )}
 
         <div>
           <label className="block text-sm font-medium text-slate-700 mb-1">Cliente</label>
@@ -779,6 +847,49 @@ function FotoAdjuntos() {
   );
 }
 
+function ClasificacionEditor({ registro, recargarRegistros }) {
+  const [clase, setClase] = useState("");
+  const [dev, setDev] = useState("");
+  const [msg, setMsg] = useState("");
+  useEffect(() => {
+    setClase(registro.clasificacion || sugerirClase(registro));
+    setDev(registro.conDevolucion || "");
+    setMsg("");
+  }, [registro.numero]);
+  if (registro.tipo === TIPO_OM) return null;
+  async function guardar() {
+    if (clase === "Reclamos de Clientes" && !dev) { setMsg("Indicá si hubo devolución efectiva."); return; }
+    try {
+      await apiPut(`/nc/${registro.numero}/clasificacion`, {
+        clasificacion: clase,
+        conDevolucion: clase === "Reclamos de Clientes" ? dev === "Sí" : null,
+        usuario: window.usuarioNC ? window.usuarioNC() : null,
+      });
+      setMsg("Clasificación guardada.");
+      await recargarRegistros();
+    } catch (e) { setMsg("No se pudo guardar: " + e.message); }
+  }
+  const btn = (activo) => `px-3 py-1.5 rounded-md text-sm border ${activo ? "bg-slate-800 text-white border-slate-800" : "bg-white text-slate-600 border-slate-300"}`;
+  return (
+    <div className="border-b border-slate-100 pb-3">
+      <h3 className="text-sm font-semibold text-slate-800 mb-2">
+        Clasificación de la NC {!registro.clasificacion && <span className="text-xs font-normal text-amber-600">(sin confirmar)</span>}
+      </h3>
+      <div className="flex flex-wrap gap-2">
+        {CLASES_NC.map((c) => (<button key={c} type="button" onClick={() => setClase(c)} className={btn(clase === c)}>{c}</button>))}
+      </div>
+      {clase === "Reclamos de Clientes" && (
+        <div className="flex items-center gap-2 mt-2">
+          <span className="text-sm text-slate-700">¿Devolución efectiva?</span>
+          {["Sí", "No"].map((v) => (<button key={v} type="button" onClick={() => setDev(v)} className={btn(dev === v)}>{v}</button>))}
+        </div>
+      )}
+      <button type="button" onClick={guardar} className="mt-2 px-3 py-1.5 rounded-md text-sm bg-slate-800 text-white">Guardar clasificación</button>
+      {msg && <span className="text-xs text-slate-500 ml-2">{msg}</span>}
+    </div>
+  );
+}
+
 function Bloque2({ registros, recargarRegistros }) {
   const [b2, setB2] = useState(emptyBloque2);
   const [notificaciones, setNotificaciones] = useState([{ nombre: "", fecha: "" }]);
@@ -911,6 +1022,11 @@ function Bloque2({ registros, recargarRegistros }) {
           </p>
         )}
       </div>
+
+      {(() => {
+        const reg = registros.find((r) => String(r.numero) === String(b2.numeroNC));
+        return reg ? <ClasificacionEditor registro={reg} recargarRegistros={recargarRegistros} /> : null;
+      })()}
 
       <div>
         <h3 className="text-sm font-semibold text-slate-800 mb-2">Análisis de causa — 5 porqués</h3>
