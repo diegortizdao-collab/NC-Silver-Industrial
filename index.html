@@ -185,6 +185,7 @@ const MAQUINAS = ["1", "2", "3", "4", "6", "7", "8", "9", "10", "11", "12", "13"
 const TIPOS_INFORME = ["No conformidad", "Hallazgo de auditoría", "Op. de mejora"];
 const CATEGORIAS = ["Producto", "Proceso", "Proveedor", "Cliente", "Otros"];
 const TIPO_OM = "Op. de mejora";
+const TIPO_HA = "Hallazgo de auditoría";
 // Clasificación de las NC (PR.05 Rev. 6). Alimenta Quejas, Devoluciones y Fallas internas del Apéndice C.
 const CLASES_NC = ["Defectos x Control de Calidad", "Reclamos de Clientes", "Hallazgos de Auditoría", "Proveedores"];
 function sugerirClase(f) {
@@ -194,7 +195,7 @@ function sugerirClase(f) {
   if (f.categoria === "Proveedor") return "Proveedores";
   return "Defectos x Control de Calidad";
 }
-const ESTADOS = ["Abierta", "En análisis", "En verificación", "Cerrada"];
+const ESTADOS = ["Abierta", "En análisis", "En verificación", "Cerrada"]; // "Aplicada" solo lo asigna la carga de OM
 
 const emptyForm = {
   cargadoPor: "",
@@ -266,14 +267,18 @@ function Bloque1({ registros, recargarRegistros }) {
   const [guardando, setGuardando] = useState(false);
   const [guardadoOk, setGuardadoOk] = useState(false);
   const esOM = form.tipo === TIPO_OM;
+  const esHA = form.tipo === TIPO_HA;
+  const serieTipo = esOM ? "om" : esHA ? "ha" : null;
+  const [numeroSerie, setNumeroSerie] = useState("");
   const claseEfectiva = esOM ? "" : form.clasificacion || sugerirClase(form);
 
   async function cargarProximoNumero() {
     try {
       // Cada tipo de informe tiene su propia numeración: las OM van aparte de las NC.
-      const data = await apiGet(`/nc/proximo-numero${esOM ? "?tipo=om" : ""}`);
+      const data = await apiGet(`/nc/proximo-numero${serieTipo ? "?tipo=" + serieTipo : ""}`);
       setNextNumero(data.siguiente);
       setNextInterno(data.numeroInterno || data.siguiente);
+      setNumeroSerie(String(data.siguiente));
     } catch (e) {
       setError("No se pudo consultar el próximo número: " + e.message);
     }
@@ -282,7 +287,7 @@ function Bloque1({ registros, recargarRegistros }) {
   useEffect(() => {
     setNextNumero(null);
     cargarProximoNumero();
-  }, [esOM]);
+  }, [serieTipo]);
 
   function update(field, value) {
     // Al cambiar tipo o categoría vuelve a valer la clasificación sugerida
@@ -290,7 +295,8 @@ function Bloque1({ registros, recargarRegistros }) {
   }
 
   function validar() {
-    const requeridos = ["cargadoPor", "producto", "descripcion", "operario", "maquina", "oti", "disposicion"];
+    // Las OM (ya aplicadas) y los hallazgos de auditoría no tienen operario, máquina ni OTI.
+    const requeridos = esOM || esHA ? ["cargadoPor", "producto", "descripcion", "disposicion"] : ["cargadoPor", "producto", "descripcion", "operario", "maquina", "oti", "disposicion"];
     for (const campo of requeridos) {
       if (!form[campo]) return false;
     }
@@ -304,7 +310,11 @@ function Bloque1({ registros, recargarRegistros }) {
       return;
     }
     if (!nextNumero) {
-      setError("Todavía no se cargó el número de NC — esperá un segundo e intentá de nuevo.");
+      setError("Todavía no se cargó el número — esperá un segundo e intentá de nuevo.");
+      return;
+    }
+    if (esOM && !(Number(numeroSerie) > 0)) {
+      setError("Indicá el número de la OM.");
       return;
     }
     setError("");
@@ -315,6 +325,9 @@ function Bloque1({ registros, recargarRegistros }) {
       const operarioSel = OPERARIOS.find((o) => o.nombre === form.operario);
       const creada = await apiPost("/nc", {
         ...form,
+        // Las OM se cargan ya aplicadas: no hay propuesta ni verificación posterior
+        requiereAccion: esOM ? "No" : form.requiereAccion,
+        numeroSerie: serieTipo ? Number(numeroSerie) : undefined,
         clasificacion: claseEfectiva || null,
         conDevolucion: claseEfectiva === "Reclamos de Clientes" ? form.conDevolucion === "Sí" : null,
         numero: nextInterno,
@@ -324,6 +337,10 @@ function Bloque1({ registros, recargarRegistros }) {
       });
       // Primer snapshot del Q.21 (todavía sin Bloque 2) — así el dashboard ya tiene
       // un documento para linkear desde el momento en que se carga la NC.
+      if (esOM) {
+        // Estado "Aplicada" en todas las OM (se cargan las que ya están funcionando)
+        await apiPut(`/nc/${creada.numero}/analisis`, { estado: "Aplicada", noRequiereNotificacion: true });
+      }
       guardarSnapshotWord(creada.numero, armarDatosWord(form, creada.numero_original || creada.numero, null), false);
       setForm(emptyForm);
       setGuardadoOk(true);
@@ -359,8 +376,22 @@ function Bloque1({ registros, recargarRegistros }) {
     <div>
       <div className="bg-white rounded-lg border border-slate-200 p-5 space-y-5">
         <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-          <span className="text-sm font-medium text-slate-700">{esOM ? "Nº de OM" : "Nº de NC"}</span>
-          <span className="text-sm font-semibold text-slate-800">{nextNumero ? (esOM ? `OM-${nextNumero}` : nextNumero) : "…"}</span>
+          <span className="text-sm font-medium text-slate-700">{esOM ? "Nº de OM" : esHA ? "Nº de hallazgo" : "Nº de NC"}</span>
+          {esOM ? (
+            <span className="flex items-center gap-2 text-sm text-slate-600">
+              OM-
+              <input
+                type="number"
+                min="1"
+                value={numeroSerie}
+                onChange={(e) => setNumeroSerie(e.target.value)}
+                className="w-24 border border-slate-300 rounded-md px-2 py-1 text-sm font-semibold text-slate-800"
+              />
+              <span className="text-xs text-slate-400">editable para cargar las históricas (1–244); las nuevas siguen desde la 245</span>
+            </span>
+          ) : (
+            <span className="text-sm font-semibold text-slate-800">{nextNumero ? (esHA ? `H-${nextNumero}` : nextNumero) : "…"}</span>
+          )}
         </div>
 
         <div>
@@ -676,7 +707,7 @@ function Bloque1({ registros, recargarRegistros }) {
             {registros.map((r) => (
               <div key={r.numero} className="bg-white border border-slate-200 rounded-md p-3 text-sm">
                 <div className="flex items-center justify-between">
-                  <span className="font-medium text-slate-800">NC Nº {r.numeroMostrar} — {r.producto}</span>
+                  <span className="font-medium text-slate-800">{r.tipo === TIPO_OM ? "OM" : r.tipo === TIPO_HA && r.numero >= 300000 ? "Hallazgo" : "NC"} Nº {r.numeroMostrar} — {r.producto}</span>
                   <span
                     className={`text-xs px-2 py-0.5 rounded-full ${
                       r.requiereAccion === "Sí" ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-600"
@@ -1011,7 +1042,7 @@ function Bloque2({ registros, recargarRegistros }) {
           <option value="">Seleccionar de las pendientes del Bloque 1</option>
           {pendientes.map((r) => (
             <option key={r.numero} value={r.numero}>
-              NC Nº {r.numeroMostrar} — {r.producto}
+              {r.tipo === TIPO_OM ? "OM" : r.tipo === TIPO_HA && r.numero >= 300000 ? "Hallazgo" : "NC"} Nº {r.numeroMostrar} — {r.producto}
             </option>
           ))}
         </select>
