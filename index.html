@@ -1292,6 +1292,31 @@ function SeguimientoOM() {
   const [abierta, setAbierta] = useState(null);
   const [edit, setEdit] = useState(null);
   const [guardando, setGuardando] = useState(false);
+  const [hist, setHist] = useState(null);
+
+  function abrirHist() {
+    setHist({ numeroOriginal: "", fecha: "", producto: "", descripcion: "", ...emptyOM, fechaVigencia: "" });
+  }
+  function updateHist(field, value) {
+    setHist((h) => ({ ...h, [field]: value }));
+  }
+  async function guardarHist() {
+    if (!hist.numeroOriginal || !hist.descripcion.trim()) {
+      setError("Para cargar una OM histórica completá al menos número y descripción.");
+      return;
+    }
+    setGuardando(true);
+    try {
+      await apiPost("/om/historica", hist);
+      setHist(null);
+      setError("");
+      await cargar();
+    } catch (e) {
+      setError("No se pudo cargar la OM histórica: " + e.message);
+    } finally {
+      setGuardando(false);
+    }
+  }
 
   async function cargar() {
     try {
@@ -1349,6 +1374,52 @@ function SeguimientoOM() {
           Cód: Q.25 · Rev 0. Las OM se cargan desde el Bloque 1 eligiendo el tipo "Op. de mejora"; acá se actualiza su
           estado y se revisa la vigencia cada 6 meses.
         </p>
+      </div>
+
+      <div className="bg-white rounded-lg border border-slate-200 p-4">
+        <div className="flex items-center justify-between">
+          <p className="text-sm font-medium text-slate-800">¿Tenés una mejora anterior a esta app?</p>
+          <button type="button" onClick={() => (hist ? setHist(null) : abrirHist())} className="text-sm text-blue-600 hover:underline">
+            {hist ? "Cancelar" : "+ Cargar OM histórica"}
+          </button>
+        </div>
+        {hist && (
+          <div className="mt-3 pt-3 border-t border-slate-100 space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div><label className="block text-xs font-medium text-slate-600 mb-1">Nº de OM original *</label>
+                <input type="number" value={hist.numeroOriginal} onChange={(e) => updateHist("numeroOriginal", e.target.value)} className="w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" /></div>
+              <div><label className="block text-xs font-medium text-slate-600 mb-1">Fecha de la OM</label>
+                <input type="date" value={hist.fecha} onChange={(e) => updateHist("fecha", e.target.value)} className="w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" /></div>
+              <div><label className="block text-xs font-medium text-slate-600 mb-1">Producto / proceso</label>
+                <input type="text" value={hist.producto} onChange={(e) => updateHist("producto", e.target.value)} className="w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" /></div>
+              <div><label className="block text-xs font-medium text-slate-600 mb-1">Origen</label>
+                <select value={hist.origen} onChange={(e) => updateHist("origen", e.target.value)} className="w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm">
+                  <option value="">Seleccionar</option>
+                  {ORIGENES_OM.map((o) => <option key={o} value={o}>{o}</option>)}
+                </select></div>
+              <div><label className="block text-xs font-medium text-slate-600 mb-1">Proponente</label>
+                <input type="text" list="personas-om" value={hist.proponente} onChange={(e) => updateHist("proponente", e.target.value)} className="w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" /></div>
+              <div><label className="block text-xs font-medium text-slate-600 mb-1">Responsable de implementación</label>
+                <input type="text" list="personas-om" value={hist.responsable} onChange={(e) => updateHist("responsable", e.target.value)} className="w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" /></div>
+              <div><label className="block text-xs font-medium text-slate-600 mb-1">Fecha prevista</label>
+                <input type="date" value={hist.fechaPrevista} onChange={(e) => updateHist("fechaPrevista", e.target.value)} className="w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" /></div>
+              <div><label className="block text-xs font-medium text-slate-600 mb-1">Estado</label>
+                <select value={hist.estado} onChange={(e) => updateHist("estado", e.target.value)} className="w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm">
+                  <option value="">Seleccionar</option>
+                  {ESTADOS_OM.map((o) => <option key={o} value={o}>{o}</option>)}
+                </select></div>
+              <div><label className="block text-xs font-medium text-slate-600 mb-1">Última revisión de vigencia</label>
+                <input type="date" value={hist.fechaVigencia} onChange={(e) => updateHist("fechaVigencia", e.target.value)} className="w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" /></div>
+            </div>
+            <div><label className="block text-xs font-medium text-slate-600 mb-1">Descripción *</label>
+              <textarea rows={2} value={hist.descripcion} onChange={(e) => updateHist("descripcion", e.target.value)} className="w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" /></div>
+            <div><label className="block text-xs font-medium text-slate-600 mb-1">Beneficio esperado</label>
+              <textarea rows={2} value={hist.beneficioEsperado} onChange={(e) => updateHist("beneficioEsperado", e.target.value)} className="w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" /></div>
+            <button type="button" disabled={guardando} onClick={guardarHist} className="px-4 py-2 rounded-md text-sm font-medium bg-slate-800 text-white disabled:opacity-50">
+              {guardando ? "Guardando…" : "Guardar OM histórica"}
+            </button>
+          </div>
+        )}
       </div>
 
       {error && <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-md p-3">{error}</div>}
