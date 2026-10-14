@@ -15,60 +15,6 @@
 </head>
 <body>
 <div id="root"></div>
-<script>
-// ---- Acceso (mail autorizado + contraseña). El Worker valida; acá solo se guarda el token de sesión (12 hs).
-(function () {
-  var API = "https://nc-silver-api.diegortizdao.workers.dev/api";
-  var KEY = "sgc_nc_token";
-  function leer() { try { var t = JSON.parse(localStorage.getItem(KEY) || "null"); return t && t.expira > Date.now() ? t : null; } catch (e) { return null; } }
-  function guardar(t) { try { localStorage.setItem(KEY, JSON.stringify(t)); } catch (e) {} }
-  function borrar() { try { localStorage.removeItem(KEY); } catch (e) {} }
-  window.cerrarSesionNC = function () { borrar(); location.reload(); };
-  window.usuarioNC = function () { var t = leer(); return t ? t.email : null; };
-
-  var f0 = window.fetch.bind(window);
-  window.fetch = function (url, opts) {
-    if (typeof url === "string" && url.indexOf(API) === 0 && url.indexOf(API + "/login") !== 0) {
-      var t = leer(); opts = opts || {}; opts.headers = Object.assign({}, opts.headers || {});
-      // Sin sesión no se llama a la API (la app queda oculta detrás del login): evita el bucle de recargas.
-      if (!t) return Promise.reject(new Error("Sin sesión"));
-      opts.headers["Authorization"] = "Bearer " + t.token;
-      return f0(url, opts).then(function (r) {
-        if (r.status === 401) {
-          borrar();
-          var n = Number(sessionStorage.getItem("sgc_nc_reload") || 0);
-          if (Date.now() - n > 10000) { sessionStorage.setItem("sgc_nc_reload", String(Date.now())); location.reload(); }
-        }
-        return r;
-      });
-    }
-    return f0(url, opts);
-  };
-
-  if (leer()) return;
-  document.addEventListener("DOMContentLoaded", function () {
-    var root = document.getElementById("root"); if (root) root.style.display = "none";
-    var d = document.createElement("div");
-    d.style.cssText = "min-height:100vh;display:flex;align-items:center;justify-content:center;background:#f1f5f9;font-family:system-ui,sans-serif";
-    d.innerHTML = '<form id="nc-login" style="background:#fff;padding:28px;border-radius:12px;box-shadow:0 4px 20px rgba(0,0,0,.1);width:min(92vw,360px)">' +
-      '<h2 style="margin:0 0 4px;font-size:18px;color:#1e293b">SGC Silver Industrial</h2><p style="margin:0 0 16px;font-size:13px;color:#64748b">Acceso restringido. Ingresá con tu mail autorizado.</p>' +
-      '<input id="nc-mail" type="email" placeholder="Mail" autocomplete="username" required style="width:100%;box-sizing:border-box;padding:10px;margin-bottom:10px;border:1px solid #cbd5e1;border-radius:8px">' +
-      '<input id="nc-pass" type="password" placeholder="Contraseña" autocomplete="current-password" required style="width:100%;box-sizing:border-box;padding:10px;margin-bottom:10px;border:1px solid #cbd5e1;border-radius:8px">' +
-      '<button style="width:100%;padding:10px;border:0;border-radius:8px;background:#1e293b;color:#fff;font-size:15px;cursor:pointer">Ingresar</button>' +
-      '<p id="nc-err" style="color:#b91c1c;font-size:13px;min-height:18px;margin:10px 0 0"></p></form>';
-    document.body.appendChild(d);
-    d.querySelector("form").addEventListener("submit", function (e) {
-      e.preventDefault(); var err = d.querySelector("#nc-err"); err.textContent = "Verificando...";
-      f0(API + "/login", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: d.querySelector("#nc-mail").value, password: d.querySelector("#nc-pass").value }) })
-        .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
-        .then(function (x) { if (!x.ok) { err.textContent = x.j.error || "No se pudo ingresar"; return; } guardar({ token: x.j.token, email: x.j.email, expira: x.j.expira }); location.reload(); })
-        .catch(function () { err.textContent = "No se pudo conectar con el servidor"; });
-    });
-  });
-})();
-</script>
-
 <script type="text/babel" data-presets="react">
 const { useState, useEffect } = React;
 
@@ -124,8 +70,6 @@ function mapNCFromApi(row) {
     fechaCumplimiento: row.fecha_cumplimiento || "",
     requiereAccion: row.requiere_accion || "",
     estado: row.estado || "Abierta",
-    clasificacion: row.clasificacion || "",
-    conDevolucion: row.con_devolucion === true ? "Sí" : row.con_devolucion === false ? "No" : "",
   };
 }
 
@@ -184,18 +128,36 @@ const MAQUINAS = ["1", "2", "3", "4", "6", "7", "8", "9", "10", "11", "12", "13"
 
 const TIPOS_INFORME = ["No conformidad", "Hallazgo de auditoría", "Op. de mejora"];
 const CATEGORIAS = ["Producto", "Proceso", "Proveedor", "Cliente", "Otros"];
+const ESTADOS = ["Abierta", "En análisis", "En verificación", "Cerrada"];
+
+// Q.25 — Registro de oportunidades de mejora (Cód: Q.25, Rev. 0).
+// Una OM nace como Q.21 con tipo "Op. de mejora" y conserva ese número.
 const TIPO_OM = "Op. de mejora";
-const TIPO_HA = "Hallazgo de auditoría";
-// Clasificación de las NC (PR.05 Rev. 6). Alimenta Quejas, Devoluciones y Fallas internas del Apéndice C.
-const CLASES_NC = ["Defectos x Control de Calidad", "Reclamos de Clientes", "Hallazgos de Auditoría", "Proveedores"];
-function sugerirClase(f) {
-  if (f.tipo === TIPO_OM) return "";
-  if (f.tipo === "Hallazgo de auditoría") return "Hallazgos de Auditoría";
-  if (f.categoria === "Cliente") return "Reclamos de Clientes";
-  if (f.categoria === "Proveedor") return "Proveedores";
-  return "Defectos x Control de Calidad";
+const ORIGENES_OM = ["Hallazgo de auditoría", "Problema de producción", "Análisis del FODA", "Idea/propuesta"];
+const ESTADOS_OM = ["Pendiente", "En proceso", "Implementado"];
+
+const emptyOM = {
+  origen: "",
+  proponente: "",
+  responsable: "",
+  fechaPrevista: "",
+  beneficioEsperado: "",
+  estado: "Pendiente",
+  vigencia: "Sí",
+  fechaVigencia: "",
+};
+
+function hoyISO() {
+  const d = new Date();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${mm}-${dd}`;
 }
-const ESTADOS = ["Abierta", "En análisis", "En verificación", "Cerrada"]; // "Aplicada" solo lo asigna la carga de OM
+
+// Las fechas DATE llegan de la API como "2026-05-26T00:00:00.000Z"; los inputs date quieren "2026-05-26".
+function soloFecha(v) {
+  return v ? String(v).slice(0, 10) : "";
+}
 
 const emptyForm = {
   cargadoPor: "",
@@ -214,8 +176,6 @@ const emptyForm = {
   cumplido: "",
   fechaCumplimiento: "",
   requiereAccion: "",
-  clasificacion: "",
-  conDevolucion: "",
 };
 
 const emptyBloque2 = {
@@ -261,60 +221,57 @@ function Header() {
 
 function Bloque1({ registros, recargarRegistros }) {
   const [form, setForm] = useState(emptyForm);
+  const [om, setOm] = useState({ ...emptyOM, fechaVigencia: hoyISO() });
+  const esOM = form.tipo === TIPO_OM;
+  function updateOM(field, value) {
+    setOm((o) => ({ ...o, [field]: value }));
+  }
   const [error, setError] = useState("");
   const [nextNumero, setNextNumero] = useState(null);
-  const [nextInterno, setNextInterno] = useState(null);
   const [guardando, setGuardando] = useState(false);
   const [guardadoOk, setGuardadoOk] = useState(false);
-  const esOM = form.tipo === TIPO_OM;
-  const esHA = form.tipo === TIPO_HA;
-  const serieTipo = esOM ? "om" : esHA ? "ha" : null;
-  const [numeroSerie, setNumeroSerie] = useState("");
-  const claseEfectiva = esOM ? "" : form.clasificacion || sugerirClase(form);
 
   async function cargarProximoNumero() {
     try {
-      // Cada tipo de informe tiene su propia numeración: las OM van aparte de las NC.
-      const data = await apiGet(`/nc/proximo-numero${serieTipo ? "?tipo=" + serieTipo : ""}`);
+      const data = await apiGet("/nc/proximo-numero");
       setNextNumero(data.siguiente);
-      setNextInterno(data.numeroInterno || data.siguiente);
-      setNumeroSerie(String(data.siguiente));
     } catch (e) {
-      setError("No se pudo consultar el próximo número: " + e.message);
+      setError("No se pudo consultar el próximo número de NC: " + e.message);
     }
   }
 
   useEffect(() => {
-    setNextNumero(null);
     cargarProximoNumero();
-  }, [serieTipo]);
+  }, []);
 
   function update(field, value) {
-    // Al cambiar tipo o categoría vuelve a valer la clasificación sugerida
-    setForm((f) => ({ ...f, [field]: value, ...(field === "tipo" || field === "categoria" ? { clasificacion: "", conDevolucion: "" } : {}) }));
+    setForm((f) => ({ ...f, [field]: value }));
   }
 
   function validar() {
-    // Las OM (ya aplicadas) y los hallazgos de auditoría no tienen operario, máquina ni OTI.
-    const requeridos = esOM || esHA ? ["cargadoPor", "producto", "descripcion", "disposicion"] : ["cargadoPor", "producto", "descripcion", "operario", "maquina", "oti", "disposicion"];
+    // Una OM (idea, FODA, hallazgo) no siempre tiene operario, máquina ni OTI:
+    // para ese tipo solo se exige lo mínimo, más origen y proponente de la Q.25.
+    const requeridos = esOM
+      ? ["cargadoPor", "producto", "descripcion"]
+      : ["cargadoPor", "producto", "descripcion", "operario", "maquina", "oti", "disposicion"];
     for (const campo of requeridos) {
       if (!form[campo]) return false;
     }
-    if (claseEfectiva === "Reclamos de Clientes" && !form.conDevolucion) return false;
+    if (esOM && (!om.origen || !om.proponente)) return false;
     return true;
   }
 
   async function handleSubmit() {
     if (!validar()) {
-      setError("Completá quién carga, producto, descripción, operario, máquina, OTI y disposición antes de guardar" + (claseEfectiva === "Reclamos de Clientes" ? " (y si el reclamo tuvo devolución)." : "."));
+      setError(
+        esOM
+          ? "Completá quién carga, producto, descripción, y el origen y el proponente de la oportunidad de mejora antes de guardar."
+          : "Completá quién carga, producto, descripción, operario, máquina, OTI y disposición antes de guardar."
+      );
       return;
     }
     if (!nextNumero) {
-      setError("Todavía no se cargó el número — esperá un segundo e intentá de nuevo.");
-      return;
-    }
-    if (esOM && !(Number(numeroSerie) > 0)) {
-      setError("Indicá el número de la OM.");
+      setError("Todavía no se cargó el número de NC — esperá un segundo e intentá de nuevo.");
       return;
     }
     setError("");
@@ -323,27 +280,33 @@ function Bloque1({ registros, recargarRegistros }) {
     try {
       const cargador = CARGADORES.find((c) => c.apellido === form.cargadoPor);
       const operarioSel = OPERARIOS.find((o) => o.nombre === form.operario);
-      const creada = await apiPost("/nc", {
+      await apiPost("/nc", {
         ...form,
-        // Las OM se cargan ya aplicadas: no hay propuesta ni verificación posterior
-        requiereAccion: esOM ? "No" : form.requiereAccion,
-        numeroSerie: serieTipo ? Number(numeroSerie) : undefined,
-        clasificacion: claseEfectiva || null,
-        conDevolucion: claseEfectiva === "Reclamos de Clientes" ? form.conDevolucion === "Sí" : null,
-        numero: nextInterno,
+        // La columna disposición es obligatoria en la base; en una OM no aplica.
+        disposicion: form.disposicion || (esOM ? "N/A (oportunidad de mejora)" : ""),
+        numero: nextNumero,
         cargadoPorApellido: cargador ? cargador.apellido : null,
         cargadoPorNombre: cargador ? cargador.nombre : null,
         operarioLegajo: operarioSel && operarioSel.legajo ? operarioSel.legajo : null,
       });
+      // Si es una OM, la misma carga alimenta el registro Q.25 (mismo número).
+      let errorOM = "";
+      if (esOM) {
+        try {
+          await apiPut(`/om/${nextNumero}`, { ...om, fechaVigencia: om.fechaVigencia || hoyISO() });
+          setOm({ ...emptyOM, fechaVigencia: hoyISO() });
+        } catch (e) {
+          errorOM = e.message;
+        }
+      }
       // Primer snapshot del Q.21 (todavía sin Bloque 2) — así el dashboard ya tiene
       // un documento para linkear desde el momento en que se carga la NC.
-      if (esOM) {
-        // Estado "Aplicada" en todas las OM (se cargan las que ya están funcionando)
-        await apiPut(`/nc/${creada.numero}/analisis`, { estado: "Aplicada", noRequiereNotificacion: true });
-      }
-      guardarSnapshotWord(creada.numero, armarDatosWord(form, creada.numero_original || creada.numero, null), false);
+      guardarSnapshotWord(nextNumero, armarDatosWord(form, nextNumero, null), false);
       setForm(emptyForm);
       setGuardadoOk(true);
+      if (errorOM) {
+        setError("La NC se guardó, pero no se pudo registrar en la Q.25 (" + errorOM + "). Completala desde la pestaña Q.25.");
+      }
       await cargarProximoNumero();
       await recargarRegistros();
     } catch (e) {
@@ -364,7 +327,7 @@ function Bloque1({ registros, recargarRegistros }) {
     setGenerando(true);
     try {
       const datos = armarDatosWord(form, nextNumero, null);
-      await generarWordNC(datos, `Q21_${esOM ? "OM" : "NC"}_${nextNumero}.docx`);
+      await generarWordNC(datos, `Q21_NC_${nextNumero}.docx`);
     } catch (e) {
       setError("No se pudo generar el Word: " + e.message);
     } finally {
@@ -376,22 +339,8 @@ function Bloque1({ registros, recargarRegistros }) {
     <div>
       <div className="bg-white rounded-lg border border-slate-200 p-5 space-y-5">
         <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-          <span className="text-sm font-medium text-slate-700">{esOM ? "Nº de OM" : esHA ? "Nº de hallazgo" : "Nº de NC"}</span>
-          {esOM ? (
-            <span className="flex items-center gap-2 text-sm text-slate-600">
-              OM-
-              <input
-                type="number"
-                min="1"
-                value={numeroSerie}
-                onChange={(e) => setNumeroSerie(e.target.value)}
-                className="w-24 border border-slate-300 rounded-md px-2 py-1 text-sm font-semibold text-slate-800"
-              />
-              <span className="text-xs text-slate-400">editable para cargar las históricas (1–244); las nuevas siguen desde la 245</span>
-            </span>
-          ) : (
-            <span className="text-sm font-semibold text-slate-800">{nextNumero ? (esHA ? `H-${nextNumero}` : nextNumero) : "…"}</span>
-          )}
+          <span className="text-sm font-medium text-slate-700">Nº de NC</span>
+          <span className="text-sm font-semibold text-slate-800">{nextNumero || "…"}</span>
         </div>
 
         <div>
@@ -430,6 +379,96 @@ function Bloque1({ registros, recargarRegistros }) {
           </div>
         </div>
 
+        {esOM && (
+          <div className="border border-blue-200 bg-blue-50/50 rounded-lg p-4 space-y-3">
+            <div>
+              <p className="text-sm font-semibold text-blue-900">Registro Q.25 — Oportunidad de mejora</p>
+              <p className="text-xs text-blue-800/70 mt-0.5">
+                Esta carga también queda registrada en la Q.25 con el mismo número que el Q.21.
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Origen</label>
+              <select
+                value={om.origen}
+                onChange={(e) => updateOM("origen", e.target.value)}
+                className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white"
+              >
+                <option value="">Seleccionar</option>
+                {ORIGENES_OM.map((o) => (
+                  <option key={o} value={o}>{o}</option>
+                ))}
+              </select>
+            </div>
+
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Proponente</label>
+                <input
+                  type="text"
+                  list="personas-om"
+                  value={om.proponente}
+                  onChange={(e) => updateOM("proponente", e.target.value)}
+                  placeholder="Quién la propone"
+                  className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Responsable de implementación</label>
+                <input
+                  type="text"
+                  list="personas-om"
+                  value={om.responsable}
+                  onChange={(e) => updateOM("responsable", e.target.value)}
+                  placeholder="Quién la implementa"
+                  className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Fecha prevista de implementación</label>
+                <input
+                  type="date"
+                  value={om.fechaPrevista}
+                  onChange={(e) => updateOM("fechaPrevista", e.target.value)}
+                  className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Estado</label>
+                <select
+                  value={om.estado}
+                  onChange={(e) => updateOM("estado", e.target.value)}
+                  className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white"
+                >
+                  {ESTADOS_OM.map((e) => (
+                    <option key={e} value={e}>{e}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Beneficio esperado</label>
+              <textarea
+                value={om.beneficioEsperado}
+                onChange={(e) => updateOM("beneficioEsperado", e.target.value)}
+                rows={2}
+                placeholder="Qué se espera lograr (menos scrap, menos tiempo de cambio, etc.)"
+                className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white"
+              />
+            </div>
+
+            <p className="text-xs text-slate-500">
+              Vigencia: Sí, con fecha de revisión de hoy. Se revisa cada 6 meses desde la pestaña Q.25.
+            </p>
+          </div>
+        )}
+
         <div>
           <label className="block text-sm font-medium text-slate-700 mb-2">Categoría</label>
           <div className="flex flex-wrap gap-2">
@@ -449,50 +488,6 @@ function Bloque1({ registros, recargarRegistros }) {
             ))}
           </div>
         </div>
-
-        {!esOM && (
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-2">
-              Clasificación de la NC <span className="text-xs font-normal text-slate-400">(sugerida según tipo y categoría; Calidad la confirma)</span>
-            </label>
-            <div className="flex flex-wrap gap-2">
-              {CLASES_NC.map((c) => (
-                <button
-                  key={c}
-                  type="button"
-                  onClick={() => update("clasificacion", c)}
-                  className={`px-3 py-1.5 rounded-md text-sm border ${
-                    claseEfectiva === c
-                      ? "bg-slate-800 text-white border-slate-800"
-                      : "bg-white text-slate-600 border-slate-300 hover:border-slate-400"
-                  }`}
-                >
-                  {c}
-                </button>
-              ))}
-            </div>
-            {claseEfectiva === "Reclamos de Clientes" && (
-              <div className="mt-3">
-                <label className="block text-sm font-medium text-slate-700 mb-1">¿Hubo devolución efectiva del producto?</label>
-                <div className="flex gap-2">
-                  {["Sí", "No"].map((v) => (
-                    <button
-                      key={v}
-                      type="button"
-                      onClick={() => update("conDevolucion", v)}
-                      className={`px-3 py-1.5 rounded-md text-sm border ${
-                        form.conDevolucion === v ? "bg-slate-800 text-white border-slate-800" : "bg-white text-slate-600 border-slate-300"
-                      }`}
-                    >
-                      {v}
-                    </button>
-                  ))}
-                </div>
-                <p className="text-xs text-slate-400 mt-1">Devolución = el cliente devolvió físicamente el producto. Reposición o retrabajo en el cliente sin que vuelva el producto cuenta como "No".</p>
-              </div>
-            )}
-          </div>
-        )}
 
         <div>
           <label className="block text-sm font-medium text-slate-700 mb-1">Cliente</label>
@@ -707,7 +702,7 @@ function Bloque1({ registros, recargarRegistros }) {
             {registros.map((r) => (
               <div key={r.numero} className="bg-white border border-slate-200 rounded-md p-3 text-sm">
                 <div className="flex items-center justify-between">
-                  <span className="font-medium text-slate-800">{r.tipo === TIPO_OM ? "OM" : r.tipo === TIPO_HA && r.numero >= 300000 ? "Hallazgo" : "NC"} Nº {r.numeroMostrar} — {r.producto}</span>
+                  <span className="font-medium text-slate-800">NC Nº {r.numeroMostrar} — {r.producto}</span>
                   <span
                     className={`text-xs px-2 py-0.5 rounded-full ${
                       r.requiereAccion === "Sí" ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-600"
@@ -878,49 +873,6 @@ function FotoAdjuntos() {
   );
 }
 
-function ClasificacionEditor({ registro, recargarRegistros }) {
-  const [clase, setClase] = useState("");
-  const [dev, setDev] = useState("");
-  const [msg, setMsg] = useState("");
-  useEffect(() => {
-    setClase(registro.clasificacion || sugerirClase(registro));
-    setDev(registro.conDevolucion || "");
-    setMsg("");
-  }, [registro.numero]);
-  if (registro.tipo === TIPO_OM) return null;
-  async function guardar() {
-    if (clase === "Reclamos de Clientes" && !dev) { setMsg("Indicá si hubo devolución efectiva."); return; }
-    try {
-      await apiPut(`/nc/${registro.numero}/clasificacion`, {
-        clasificacion: clase,
-        conDevolucion: clase === "Reclamos de Clientes" ? dev === "Sí" : null,
-        usuario: window.usuarioNC ? window.usuarioNC() : null,
-      });
-      setMsg("Clasificación guardada.");
-      await recargarRegistros();
-    } catch (e) { setMsg("No se pudo guardar: " + e.message); }
-  }
-  const btn = (activo) => `px-3 py-1.5 rounded-md text-sm border ${activo ? "bg-slate-800 text-white border-slate-800" : "bg-white text-slate-600 border-slate-300"}`;
-  return (
-    <div className="border-b border-slate-100 pb-3">
-      <h3 className="text-sm font-semibold text-slate-800 mb-2">
-        Clasificación de la NC {!registro.clasificacion && <span className="text-xs font-normal text-amber-600">(sin confirmar)</span>}
-      </h3>
-      <div className="flex flex-wrap gap-2">
-        {CLASES_NC.map((c) => (<button key={c} type="button" onClick={() => setClase(c)} className={btn(clase === c)}>{c}</button>))}
-      </div>
-      {clase === "Reclamos de Clientes" && (
-        <div className="flex items-center gap-2 mt-2">
-          <span className="text-sm text-slate-700">¿Devolución efectiva?</span>
-          {["Sí", "No"].map((v) => (<button key={v} type="button" onClick={() => setDev(v)} className={btn(dev === v)}>{v}</button>))}
-        </div>
-      )}
-      <button type="button" onClick={guardar} className="mt-2 px-3 py-1.5 rounded-md text-sm bg-slate-800 text-white">Guardar clasificación</button>
-      {msg && <span className="text-xs text-slate-500 ml-2">{msg}</span>}
-    </div>
-  );
-}
-
 function Bloque2({ registros, recargarRegistros }) {
   const [b2, setB2] = useState(emptyBloque2);
   const [notificaciones, setNotificaciones] = useState([{ nombre: "", fecha: "" }]);
@@ -1042,7 +994,7 @@ function Bloque2({ registros, recargarRegistros }) {
           <option value="">Seleccionar de las pendientes del Bloque 1</option>
           {pendientes.map((r) => (
             <option key={r.numero} value={r.numero}>
-              {r.tipo === TIPO_OM ? "OM" : r.tipo === TIPO_HA && r.numero >= 300000 ? "Hallazgo" : "NC"} Nº {r.numeroMostrar} — {r.producto}
+              NC Nº {r.numeroMostrar} — {r.producto}
             </option>
           ))}
         </select>
@@ -1053,11 +1005,6 @@ function Bloque2({ registros, recargarRegistros }) {
           </p>
         )}
       </div>
-
-      {(() => {
-        const reg = registros.find((r) => String(r.numero) === String(b2.numeroNC));
-        return reg ? <ClasificacionEditor registro={reg} recargarRegistros={recargarRegistros} /> : null;
-      })()}
 
       <div>
         <h3 className="text-sm font-semibold text-slate-800 mb-2">Análisis de causa — 5 porqués</h3>
@@ -1325,6 +1272,202 @@ function Bloque2({ registros, recargarRegistros }) {
   );
 }
 
+function sumarMeses(iso, n) {
+  const [y, m, d] = iso.split("-").map(Number);
+  const dt = new Date(y, m - 1 + n, d);
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+}
+
+const COLORES_ESTADO_OM = {
+  Implementado: "bg-green-100 text-green-700",
+  "En proceso": "bg-amber-100 text-amber-700",
+  Pendiente: "bg-slate-100 text-slate-600",
+};
+
+// Q.25 — seguimiento de las oportunidades de mejora: estado, vigencia y revisión semestral.
+function SeguimientoOM() {
+  const [filas, setFilas] = useState([]);
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState("");
+  const [abierta, setAbierta] = useState(null);
+  const [edit, setEdit] = useState(null);
+  const [guardando, setGuardando] = useState(false);
+
+  async function cargar() {
+    try {
+      setFilas(await apiGet("/om"));
+      setError("");
+    } catch (e) {
+      setError("No se pudo cargar la Q.25: " + e.message);
+    } finally {
+      setCargando(false);
+    }
+  }
+
+  useEffect(() => {
+    cargar();
+  }, []);
+
+  function abrir(f) {
+    setAbierta(f.nc_numero);
+    setEdit({
+      origen: f.origen || "",
+      proponente: f.proponente || "",
+      responsable: f.responsable || "",
+      fechaPrevista: soloFecha(f.fecha_prevista),
+      beneficioEsperado: f.beneficio_esperado || "",
+      estado: f.estado || "",
+      vigencia: f.vigencia || "",
+      fechaVigencia: soloFecha(f.fecha_vigencia),
+    });
+  }
+
+  function updateEdit(field, value) {
+    setEdit((e) => ({ ...e, [field]: value }));
+  }
+
+  async function guardar() {
+    setGuardando(true);
+    try {
+      await apiPut(`/om/${abierta}`, edit);
+      setAbierta(null);
+      await cargar();
+    } catch (e) {
+      setError("No se pudo guardar: " + e.message);
+    } finally {
+      setGuardando(false);
+    }
+  }
+
+  const hoy = hoyISO();
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-white rounded-lg border border-slate-200 p-5">
+        <p className="text-sm font-semibold text-slate-800">Q.25 — Registro de oportunidades de mejora</p>
+        <p className="text-xs text-slate-500 mt-1">
+          Cód: Q.25 · Rev 0. Las OM se cargan desde el Bloque 1 eligiendo el tipo "Op. de mejora"; acá se actualiza su
+          estado y se revisa la vigencia cada 6 meses.
+        </p>
+      </div>
+
+      {error && <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-md p-3">{error}</div>}
+      {cargando && <p className="text-sm text-slate-400">Cargando…</p>}
+      {!cargando && filas.length === 0 && (
+        <p className="text-sm text-slate-400">Todavía no hay oportunidades de mejora registradas.</p>
+      )}
+
+      {filas.map((f) => {
+        const fv = soloFecha(f.fecha_vigencia);
+        const proxima = fv ? sumarMeses(fv, 6) : "";
+        const vencida = f.vigencia === "Sí" && (!proxima || proxima < hoy);
+        const numero = f.numero_original || f.nc_numero;
+        return (
+          <div key={f.nc_numero} className="bg-white rounded-lg border border-slate-200 p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-slate-800">
+                  OM Nº {numero}
+                  <span className="ml-2 text-xs font-normal text-slate-500">{f.origen || "Sin origen"}</span>
+                </p>
+                <p className="text-xs text-slate-600 mt-1">{f.descripcion}</p>
+              </div>
+              <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium whitespace-nowrap ${COLORES_ESTADO_OM[f.estado] || "bg-slate-100 text-slate-500"}`}>
+                {f.estado || "Sin estado"}
+              </span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2 text-xs text-slate-500">
+              <span>Vigente: {f.vigencia || "—"}</span>
+              <span>Última revisión: {fv || "—"}</span>
+              {f.vigencia === "Sí" && (
+                <span className={vencida ? "text-red-600 font-medium" : ""}>
+                  {vencida ? "Revisión vencida" : `Próxima revisión: ${proxima}`}
+                </span>
+              )}
+              <button type="button" onClick={() => (abierta === f.nc_numero ? setAbierta(null) : abrir(f))} className="ml-auto text-blue-600 hover:underline">
+                {abierta === f.nc_numero ? "Cerrar" : "Editar"}
+              </button>
+            </div>
+
+            {abierta === f.nc_numero && edit && (
+              <div className="mt-3 pt-3 border-t border-slate-100 space-y-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 mb-1">Origen</label>
+                    <select value={edit.origen} onChange={(e) => updateEdit("origen", e.target.value)} className="w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm">
+                      <option value="">Seleccionar</option>
+                      {ORIGENES_OM.map((o) => (
+                        <option key={o} value={o}>{o}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 mb-1">Estado</label>
+                    <select value={edit.estado} onChange={(e) => updateEdit("estado", e.target.value)} className="w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm">
+                      <option value="">Seleccionar</option>
+                      {ESTADOS_OM.map((o) => (
+                        <option key={o} value={o}>{o}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 mb-1">Proponente</label>
+                    <input type="text" list="personas-om" value={edit.proponente} onChange={(e) => updateEdit("proponente", e.target.value)} className="w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 mb-1">Responsable de implementación</label>
+                    <input type="text" list="personas-om" value={edit.responsable} onChange={(e) => updateEdit("responsable", e.target.value)} className="w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 mb-1">Fecha prevista</label>
+                    <input type="date" value={edit.fechaPrevista} onChange={(e) => updateEdit("fechaPrevista", e.target.value)} className="w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 mb-1">Vigente</label>
+                    <select value={edit.vigencia} onChange={(e) => updateEdit("vigencia", e.target.value)} className="w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm">
+                      <option value="">Seleccionar</option>
+                      <option value="Sí">Sí</option>
+                      <option value="No">No</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Beneficio esperado</label>
+                  <textarea value={edit.beneficioEsperado} onChange={(e) => updateEdit("beneficioEsperado", e.target.value)} rows={2} className="w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
+                </div>
+
+                <div className="flex flex-wrap items-end gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 mb-1">Fecha de vigencia (última revisión)</label>
+                    <input type="date" value={edit.fechaVigencia} onChange={(e) => updateEdit("fechaVigencia", e.target.value)} className="border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setEdit((e) => ({ ...e, vigencia: "Sí", fechaVigencia: hoy }))}
+                    className="px-3 py-1.5 rounded-md text-sm border border-slate-300 text-slate-600 hover:border-slate-400"
+                  >
+                    Revisada hoy, sigue vigente
+                  </button>
+                  <button
+                    type="button"
+                    onClick={guardar}
+                    disabled={guardando}
+                    className="ml-auto px-4 py-1.5 rounded-md text-sm font-medium bg-slate-800 text-white disabled:opacity-50"
+                  >
+                    {guardando ? "Guardando…" : "Guardar"}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function NCApp() {
   const [tab, setTab] = useState("bloque2");
   const [registros, setRegistros] = useState([]);
@@ -1367,6 +1510,15 @@ function NCApp() {
         <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-md p-3 mb-4">{errorLista}</div>
       )}
 
+      <datalist id="personas-om">
+        {CARGADORES.map((c) => (
+          <option key={c.apellido} value={`${c.apellido} ${c.nombre}`} />
+        ))}
+        {OPERARIOS.map((o) => (
+          <option key={o.nombre} value={o.nombre} />
+        ))}
+      </datalist>
+
       <div className="flex gap-2 mb-5">
         <button
           type="button"
@@ -1386,12 +1538,23 @@ function NCApp() {
         >
           Bloque 2 · Gestión de calidad
         </button>
+        <button
+          type="button"
+          onClick={() => setTab("bloque3")}
+          className={`px-4 py-2 rounded-md text-sm font-medium border ${
+            tab === "bloque3" ? "bg-slate-800 text-white border-slate-800" : "bg-white text-slate-600 border-slate-300"
+          }`}
+        >
+          Q.25 · Mejora
+        </button>
       </div>
 
       {cargandoLista ? (
         <p className="text-sm text-slate-400">Cargando datos...</p>
       ) : tab === "bloque1" ? (
         <Bloque1 registros={registros} recargarRegistros={recargarRegistros} />
+      ) : tab === "bloque3" ? (
+        <SeguimientoOM />
       ) : (
         <Bloque2 registros={registros} recargarRegistros={recargarRegistros} />
       )}
