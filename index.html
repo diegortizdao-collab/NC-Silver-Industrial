@@ -1192,6 +1192,77 @@ function HistorialNC({ items }) {
 }
 
 // Gestión del estado de una NC: acción inmediata, requiere acción, estado — con historial y trazabilidad.
+function DatosNC({ registros, recargarRegistros }) {
+  const [sel, setSel] = useState("");
+  const [verCerradas, setVerCerradas] = useState(true);
+  const [f, setF] = useState(null);
+  const [msg, setMsg] = useState(null);
+  const [guardando, setGuardando] = useState(false);
+  const lista = registros.filter((r) => r.tipo !== TIPO_OM && (verCerradas || r.estado !== "Cerrada"));
+  const inp = "w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm bg-white";
+  const lbl = "block text-xs font-medium text-slate-600 mb-1";
+  const reg = registros.find((r) => String(r.numero) === String(sel));
+  const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+
+  function elegir(num) {
+    setSel(num); setMsg(null);
+    const r = registros.find((x) => String(x.numero) === String(num));
+    setF(r ? {
+      cargadoPor: r.cargadoPor || "", cliente: r.cliente || "", producto: r.producto || "", descripcion: r.descripcion || "",
+      fechaProduccion: normF(r.fechaProduccion), operario: r.operario || "", maquina: r.maquina || "", oti: r.oti || "",
+      cantidadPiezas: r.cantidadPiezas || "", disposicion: r.disposicion || "", fechaProgramada: normF(r.fechaProgramada),
+    } : null);
+  }
+  async function guardar() {
+    if (!reg || !f) return;
+    setGuardando(true); setMsg(null);
+    try {
+      await apiPut(`/nc/${sel}/datos`, f);
+      const d2 = await apiGet(`/nc/${sel}`);
+      const nuevo = { ...reg, ...f };
+      const b2 = mapAnalisisFromApi(d2.analisis);
+      const cerrada = reg.estado === "Cerrada";
+      const ok = await guardarSnapshotWord(sel, armarDatosWord({ ...nuevo, cumplido: d2.cumplido || "", fechaCumplimiento: normF(d2.fecha_cumplimiento), requiereAccion: d2.requiere_accion || "" }, reg.numeroMostrar || sel, b2), cerrada);
+      setMsg({ e: !ok, t: ok ? "Datos guardados y Q.21 actualizado." + (cerrada ? " La NC está cerrada: su documento quedó congelado." : "") : "Se guardaron los datos, pero no se pudo actualizar el Word del Q.21." });
+      await recargarRegistros();
+    } catch (e) { setMsg({ e: true, t: e.message }); } finally { setGuardando(false); }
+  }
+  return (
+    <div className="border border-indigo-200 bg-indigo-50/50 rounded-lg p-4 space-y-3">
+      <div>
+        <h3 className="text-sm font-semibold text-slate-800">Completar / corregir datos de una NC (Bloque 1)</h3>
+        <p className="text-xs text-slate-500">Para NC migradas del histórico o con datos incompletos. Cada cambio queda en el historial con fecha de registro y usuario. Una NC con documento congelado no se puede modificar.</p>
+      </div>
+      <select value={sel} onChange={(e) => elegir(e.target.value)} className="border border-slate-300 rounded-md px-3 py-2 text-sm bg-white w-full">
+        <option value="">Elegí la NC…</option>
+        {lista.map((r) => <option key={r.numero} value={r.numero}>Nº {r.numeroMostrar} · {r.producto} {r.cliente ? "· " + r.cliente : ""} · {r.estado || "Abierta"}</option>)}
+      </select>
+      {f && (
+        <div className="space-y-3">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div><label className={lbl}>Cargada por (firma del emisor)</label>
+              <select value={f.cargadoPor} onChange={(e) => set("cargadoPor", e.target.value)} className={inp}>
+                <option value="">— sin definir —</option><option value="Ortigoza">Ramón Ortigoza</option><option value="Canaberro">Mariano Canaberro</option><option value="Ortiz">Diego Ortiz</option>
+              </select></div>
+            <div><label className={lbl}>Fecha del hecho</label><FechaInput max={hoyISO()} value={f.fechaProduccion} onChange={(e) => set("fechaProduccion", e.target.value)} className={inp} /></div>
+            <div><label className={lbl}>Fecha programada de la acción inmediata</label><FechaInput value={f.fechaProgramada} onChange={(e) => set("fechaProgramada", e.target.value)} className={inp} /></div>
+            <div><label className={lbl}>Cliente</label><input value={f.cliente} onChange={(e) => set("cliente", e.target.value)} className={inp} /></div>
+            <div><label className={lbl}>Producto</label><input value={f.producto} onChange={(e) => set("producto", e.target.value)} className={inp} /></div>
+            <div><label className={lbl}>OTI</label><input value={f.oti} onChange={(e) => set("oti", e.target.value)} className={inp} /></div>
+            <div><label className={lbl}>Operario</label><input value={f.operario} onChange={(e) => set("operario", e.target.value)} className={inp} /></div>
+            <div><label className={lbl}>Máquina</label><input value={f.maquina} onChange={(e) => set("maquina", e.target.value)} className={inp} /></div>
+            <div><label className={lbl}>Cantidad de piezas</label><input value={f.cantidadPiezas} onChange={(e) => set("cantidadPiezas", e.target.value)} className={inp} /></div>
+          </div>
+          <div><label className={lbl}>Descripción (5W + 2H)</label><textarea rows={4} value={f.descripcion} onChange={(e) => set("descripcion", e.target.value)} className={inp} /></div>
+          <div><label className={lbl}>Disposición / acción inmediata</label><textarea rows={3} value={f.disposicion} onChange={(e) => set("disposicion", e.target.value)} className={inp} /></div>
+          <button type="button" disabled={guardando} onClick={guardar} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white rounded-md py-2 text-sm font-medium disabled:opacity-50">{guardando ? "Guardando…" : "Guardar datos"}</button>
+          {msg && <p className={`text-sm ${msg.e ? "text-red-600" : "text-emerald-700"}`}>{msg.t}</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CumplimientoEditor({ registros, recargarRegistros }) {
   const [sel, setSel] = useState("");
   const [det, setDet] = useState(null);
@@ -1593,6 +1664,7 @@ function Bloque2({ registros, recargarRegistros }) {
 
   return (
     <div className="bg-white rounded-lg border border-slate-200 p-5 space-y-6">
+      <DatosNC registros={registros} recargarRegistros={recargarRegistros} />
       <CumplimientoEditor registros={registros} recargarRegistros={recargarRegistros} />
       <GestionOM registros={registros} recargarRegistros={recargarRegistros} />
       <div className="border-b border-slate-100 pb-3">
