@@ -108,6 +108,7 @@ function mapNCFromApi(row) {
     // en tus registros); las NC nuevas no tienen esto, así que se muestra "numero".
     numeroOriginal: row.numero_original || null,
     numeroMostrar: row.numero_original || row.numero,
+    cargadoPor: row.cargado_por_apellido || "",
     tipo: row.tipo,
     categoria: row.categoria,
     cliente: row.cliente || "",
@@ -770,16 +771,33 @@ function marcarOpcionesQ21(xml, d) {
   return xml;
 }
 
-// ---- Firma digital de Gestión de Calidad (imagen guardada en R2, vía el Worker; solo cuentas autorizadas) ----
-let _firmaCalidadP = null;
-function obtenerFirmaCalidad() {
-  if (_firmaCalidadP) return _firmaCalidadP;
-  _firmaCalidadP = (async () => {
+// ---- Firmas digitales (imágenes PNG guardadas en R2, vía el Worker; solo cuentas autorizadas) ----
+// - Emisor de la NC (Ortigoza / Canaberro / Pardo / Ortiz): firma en el primer "FIRMA RESPONSABLE".
+// - Gestión de Calidad (Diego Ortiz): firma en las verificaciones de cumplimiento y de eficacia.
+let _listaFirmasP = null;
+const _firmaCache = {};
+function _normF(t) { return String(t || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, ""); }
+function listaFirmas() {
+  if (!_listaFirmasP) {
+    _listaFirmasP = (async () => {
+      try {
+        const lr = await fetch(`${API_BASE}/firmas`);
+        return lr.ok ? await lr.json() : [];
+      } catch (e) { return []; }
+    })();
+  }
+  return _listaFirmasP;
+}
+// apellido: "Ortigoza", "Canaberro", "Ortiz"... Busca en id y nombre de la firma cargada (tolera Ortigosa/Ortigoza).
+function obtenerFirmaDe(apellido) {
+  const ap = _normF(apellido).replace(/z$/, "[zs]");
+  if (!ap) return Promise.resolve(null);
+  if (_firmaCache[ap]) return _firmaCache[ap];
+  _firmaCache[ap] = (async () => {
     try {
-      const lr = await fetch(`${API_BASE}/firmas`);
-      if (!lr.ok) return null;
-      const lista = await lr.json();
-      const f = lista.find((x) => /diego|ortiz/i.test(`${x.id} ${x.nombre}`));
+      const lista = await listaFirmas();
+      const re = new RegExp(ap);
+      const f = lista.find((x) => re.test(_normF(`${x.id} ${x.nombre}`)));
       if (!f) return null;
       const r = await fetch(`${API_BASE}/firmas/${encodeURIComponent(f.id)}`);
       if (!r.ok) return null;
@@ -788,31 +806,51 @@ function obtenerFirmaCalidad() {
       return { bytes: b, w: dv.getUint32(16), h: dv.getUint32(20) };
     } catch (e) { return null; }
   })();
-  return _firmaCalidadP;
+  return _firmaCache[ap];
 }
-function insertarFirmaCalidad(zip, xml, firma, data) {
+const obtenerFirmaCalidad = () => obtenerFirmaDe("Ortiz");
+
+function _anchorFirma(firma, rid, id, nombre, dx, dy) {
   const alto = 330000; // ~0,9 cm
   let ancho = Math.round(alto * (firma.w / firma.h));
   let altoF = alto;
   if (ancho > 1080000) { ancho = 1080000; altoF = Math.round(ancho * (firma.h / firma.w)); }
   // Imagen flotante (no empuja el texto: el Q.21 sigue entrando en una hoja). dx = distancia desde el margen izquierdo.
-  const run = (dx) => `<w:r><w:drawing><wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="251700000" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="column"><wp:posOffset>${dx}</wp:posOffset></wp:positionH><wp:positionV relativeFrom="paragraph"><wp:posOffset>-190000</wp:posOffset></wp:positionV><wp:extent cx="${ancho}" cy="${altoF}"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:wrapNone/><wp:docPr id="9101" name="Firma Gestión de Calidad"/><wp:cNvGraphicFramePr/><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="9101" name="firma_calidad.png"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="rIdFirmaCalidad"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${ancho}" cy="${altoF}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>`;
+  return `<w:r><w:drawing><wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="25170${id}" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="column"><wp:posOffset>${dx}</wp:posOffset></wp:positionH><wp:positionV relativeFrom="paragraph"><wp:posOffset>${dy}</wp:posOffset></wp:positionV><wp:extent cx="${ancho}" cy="${altoF}"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:wrapNone/><wp:docPr id="${id}" name="${nombre}"/><wp:cNvGraphicFramePr/><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="${id}" name="${rid}.png"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="${rid}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${ancho}" cy="${altoF}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>`;
+}
+function _registrarImagen(zip, rid, firma) {
+  zip.file(`word/media/${rid}.png`, firma.bytes);
+  const relsPath = "word/_rels/document.xml.rels";
+  const rels = zip.file(relsPath).asText();
+  if (!rels.includes(`Id="${rid}"`)) {
+    zip.file(relsPath, rels.replace("</Relationships>", `<Relationship Id="${rid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${rid}.png"/></Relationships>`));
+  }
+}
+// Firma del emisor: va en el renglón de puntos que está sobre el primer "FIRMA RESPONSABLE / ACLARACIÓN".
+function insertarFirmaEmisor(zip, xml, firma) {
+  const paras = xml.split("</w:p>");
+  for (let i = 0; i < paras.length - 1; i++) {
+    const sig = paras[i + 1].replace(/<[^>]+>/g, "");
+    if (/FIRMA RESPONSABLE\s+ACLARACI/.test(sig)) {
+      paras[i] += _anchorFirma(firma, "rIdFirmaEmisor", 9102, "Firma emisor", 120000, -230000);
+      _registrarImagen(zip, "rIdFirmaEmisor", firma);
+      return paras.join("</w:p>");
+    }
+  }
+  return xml;
+}
+function insertarFirmaCalidad(zip, xml, firma, data) {
   const paras = xml.split("</w:p>");
   let idx = 0, usada = false;
   for (let i = 0; i < paras.length; i++) {
     if (/FIRMA DE GESTI/.test(paras[i].replace(/<[^>]+>/g, ""))) {
       const verificada = idx === 0 ? data.fechaVerifCumplimiento : data.fechaVerifEficacia;
       idx++;
-      if (verificada) { paras[i] += run(idx === 1 ? 5350000 : 4050000); usada = true; }
+      if (verificada) { paras[i] += _anchorFirma(firma, "rIdFirmaCalidad", 9101, "Firma Gestión de Calidad", idx === 1 ? 5350000 : 4050000, -190000); usada = true; }
     }
   }
   if (!usada) return xml;
-  zip.file("word/media/firma_calidad.png", firma.bytes);
-  const relsPath = "word/_rels/document.xml.rels";
-  const rels = zip.file(relsPath).asText();
-  if (!rels.includes("rIdFirmaCalidad")) {
-    zip.file(relsPath, rels.replace("</Relationships>", `<Relationship Id="rIdFirmaCalidad" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/firma_calidad.png"/></Relationships>`));
-  }
+  _registrarImagen(zip, "rIdFirmaCalidad", firma);
   return paras.join("</w:p>");
 }
 
@@ -828,6 +866,10 @@ async function generarWordBlobNC(data) {
   try {
     const zz = doc.getZip();
     let xmlF = marcarOpcionesQ21(zz.file("word/document.xml").asText(), data);
+    if (data.cargadoPor) {
+      const fe = await obtenerFirmaDe(data.cargadoPor);
+      if (fe) xmlF = insertarFirmaEmisor(zz, xmlF, fe);
+    }
     if (data.fechaVerifCumplimiento || data.fechaVerifEficacia) {
       const firma = await obtenerFirmaCalidad();
       if (firma) xmlF = insertarFirmaCalidad(zz, xmlF, firma, data);
@@ -886,6 +928,7 @@ function armarDatosWord(form, numero, b2) {
   const b2v = b2 || {};
   return {
     numeroNC: String(numero),
+    cargadoPor: form.cargadoPor || "",
     tipoSeleccionado: form.tipo || "",
     categoriaSeleccionada: form.categoria || "",
     cliente: form.cliente || "",
