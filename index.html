@@ -187,6 +187,18 @@ const CATEGORIAS = ["Producto", "Proceso", "Proveedor", "Cliente", "Otros"];
 const TIPO_OM = "Op. de mejora";
 const TIPO_HA = "Hallazgo de auditoría";
 // Clasificación de las NC (PR.05 Rev. 6). Alimenta Quejas, Devoluciones y Fallas internas del Apéndice C.
+const URL_RECLAMOS = "https://diegortizdao-collab.github.io/Reclamos/";
+function AvisoReclamo({ clase }) {
+  if (clase !== "Reclamos de Clientes" && clase !== "Proveedores") return null;
+  return (
+    <div className="mt-3 p-3 rounded-md border border-amber-300 bg-amber-50 text-sm text-amber-900">
+      <b>Esta NC genera un reclamo.</b> Después de guardarla, crealo en{" "}
+      <a href={URL_RECLAMOS} target="_blank" rel="noreferrer" className="underline font-medium">Reclamos (A.03)</a>, pestaña «NC pendientes»
+      {clase === "Reclamos de Clientes" ? ": desde ahí se genera también el A.37." : ": queda registrado en el A.03 (los reclamos a proveedores no llevan A.37)."}
+    </div>
+  );
+}
+
 const CLASES_NC = ["Defectos x Control de Calidad", "Reclamos de Clientes", "Hallazgos de Auditoría", "Proveedores"];
 function sugerirClase(f) {
   if (f.tipo === TIPO_OM) return "";
@@ -266,6 +278,7 @@ function Bloque1({ registros, recargarRegistros }) {
   const [nextInterno, setNextInterno] = useState(null);
   const [guardando, setGuardando] = useState(false);
   const [guardadoOk, setGuardadoOk] = useState(false);
+  const [claseGuardada, setClaseGuardada] = useState("");
   const esOM = form.tipo === TIPO_OM;
   const esHA = form.tipo === TIPO_HA;
   const serieTipo = esOM ? "om" : esHA ? "ha" : null;
@@ -342,6 +355,7 @@ function Bloque1({ registros, recargarRegistros }) {
         await apiPut(`/nc/${creada.numero}/analisis`, { estado: "Aplicada", noRequiereNotificacion: true });
       }
       guardarSnapshotWord(creada.numero, armarDatosWord(form, creada.numero_original || creada.numero, null), false);
+      setClaseGuardada(claseEfectiva || "");
       setForm(emptyForm);
       setGuardadoOk(true);
       await cargarProximoNumero();
@@ -471,6 +485,7 @@ function Bloque1({ registros, recargarRegistros }) {
                 </button>
               ))}
             </div>
+            <AvisoReclamo clase={claseEfectiva} />
             {claseEfectiva === "Reclamos de Clientes" && (
               <div className="mt-3">
                 <label className="block text-sm font-medium text-slate-700 mb-1">¿Hubo devolución efectiva del producto?</label>
@@ -680,6 +695,7 @@ function Bloque1({ registros, recargarRegistros }) {
 
         {error && <p className="text-sm text-red-600">{error}</p>}
         {guardadoOk && <p className="text-sm text-emerald-600">NC guardada correctamente en la base.</p>}
+        {guardadoOk && <AvisoReclamo clase={claseGuardada} />}
 
         <button
           type="button"
@@ -915,6 +931,7 @@ function ClasificacionEditor({ registro, recargarRegistros }) {
           {["Sí", "No"].map((v) => (<button key={v} type="button" onClick={() => setDev(v)} className={btn(dev === v)}>{v}</button>))}
         </div>
       )}
+      <AvisoReclamo clase={clase} />
       <button type="button" onClick={guardar} className="mt-2 px-3 py-1.5 rounded-md text-sm bg-slate-800 text-white">Guardar clasificación</button>
       {msg && <span className="text-xs text-slate-500 ml-2">{msg}</span>}
     </div>
