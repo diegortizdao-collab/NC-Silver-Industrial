@@ -1275,6 +1275,8 @@ function CumplimientoEditor({ registros, recargarRegistros }) {
   const [guardando, setGuardando] = useState(false);
   const hoy = hoyISO();
   const [verCerradas, setVerCerradas] = useState(false);
+  const [motivoReab, setMotivoReab] = useState("");
+  const [estadoReab, setEstadoReab] = useState("En verificación");
   const lista = registros.filter((r) => r.tipo !== TIPO_OM && (verCerradas || r.estado !== "Cerrada"));
 
   async function elegir(num) {
@@ -1305,6 +1307,16 @@ function CumplimientoEditor({ registros, recargarRegistros }) {
   ];
   const puedeCerrar = checks.every((c) => c.ok);
 
+  async function reabrir() {
+    setGuardando(true); setMsg(null);
+    try {
+      await apiPut(`/nc/${sel}/reabrir`, { motivo: motivoReab, estado: estadoReab });
+      setMotivoReab("");
+      await recargarRegistros();
+      await elegir(sel);
+      setMsg({ e: false, t: `NC reabierta (${estadoReab}). Ya podés completar datos y volver a cerrarla; el motivo quedó en el historial.` });
+    } catch (e) { setMsg({ e: true, t: e.message }); } finally { setGuardando(false); }
+  }
   async function guardar() {
     if (!sel) { setMsg({ e: true, t: "Elegí la NC." }); return; }
     setGuardando(true); setMsg(null);
@@ -1348,6 +1360,19 @@ function CumplimientoEditor({ registros, recargarRegistros }) {
 
       {det && (
         <>
+          {(det.documento_congelado || (det.analisis && det.analisis.estado === "Cerrada")) && (
+            <div className="border border-amber-300 bg-amber-50 rounded-md p-3 space-y-2">
+              <p className="text-sm text-amber-900 font-medium">Esta NC está cerrada{det.documento_congelado ? " y su documento está congelado" : ""}. Para completar datos tenés que reabrirla.</p>
+              <div className="flex flex-wrap gap-2 items-start">
+                <select value={estadoReab} onChange={(e) => setEstadoReab(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1.5 text-sm bg-white">
+                  <option>En verificación</option><option>En análisis</option><option>Abierta</option>
+                </select>
+                <input value={motivoReab} onChange={(e) => setMotivoReab(e.target.value)} placeholder="Motivo de la reapertura (obligatorio, queda en el historial)" className="flex-1 min-w-[240px] border border-slate-300 rounded-md px-2 py-1.5 text-sm bg-white" />
+                <button type="button" disabled={guardando || motivoReab.trim().length < 10} onClick={reabrir} className="px-3 py-1.5 rounded-md text-sm font-medium bg-amber-600 text-white disabled:opacity-40">Reabrir NC</button>
+              </div>
+              <p className="text-[11px] text-amber-800">Al volver a cerrarla, el documento se congela de nuevo. Solo Gestión de Calidad puede reabrir.</p>
+            </div>
+          )}
           <div className="text-xs text-slate-600 flex flex-wrap gap-x-4 gap-y-1">
             <span>{sem.c} {sem.t}</span>
             <span>Fecha programada de disposición: <b>{fmtD(det.fecha_programada) || "—"}</b></span>
