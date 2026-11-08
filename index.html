@@ -86,7 +86,7 @@ async function apiPost(path, body) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`Error al guardar (${res.status})`);
+  if (!res.ok) { const j = await res.json().catch(() => null); throw new Error((j && j.error) || `Error al guardar (${res.status})`); }
   return res.json();
 }
 
@@ -96,7 +96,7 @@ async function apiPut(path, body) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`Error al guardar (${res.status})`);
+  if (!res.ok) { const j = await res.json().catch(() => null); throw new Error((j && j.error) || `Error al guardar (${res.status})`); }
   return res.json();
 }
 
@@ -1055,53 +1055,184 @@ function ClasificacionEditor({ registro, recargarRegistros }) {
   );
 }
 
+const hoyISO = () => new Date(Date.now() - 3 * 3600 * 1000).toISOString().slice(0, 10);
+const fmtD = (v) => { const m = String(v || "").match(/^(\d{4})-(\d{2})-(\d{2})/); return m ? `${m[3]}/${m[2]}/${m[1]}` : ""; };
+const fmtDT = (v) => { if (!v) return ""; const d = new Date(v); return isNaN(d) ? "" : d.toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires", day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }); };
+const MOTIVO_REGULARIZACION = "Regularización — digitalización del SGC (registro posterior al hecho)";
+const MOTIVO_NORMAL = "Gestión normal";
+
+// Semáforo de plazo según la fecha programada de la disposición
+function semaforoNC(r) {
+  if (r.estado === "Cerrada") return { c: "⚪", t: "Cerrada" };
+  if (r.cumplido === "Sí") return { c: "🟢", t: "Cumplida" };
+  const f = r.fechaProgramada ? String(r.fechaProgramada).slice(0, 10) : "";
+  if (!f) return { c: "🟡", t: "Sin fecha programada" };
+  const hoy = hoyISO();
+  if (f < hoy) return { c: "🔴", t: "Vencida" };
+  const dias = Math.round((new Date(f) - new Date(hoy)) / 86400000);
+  return dias <= 3 ? { c: "🟡", t: "Por vencer" } : { c: "🟢", t: "En término" };
+}
+
+function HistorialNC({ items }) {
+  if (!items || items.length === 0) return <p className="text-xs text-slate-400">Sin cambios registrados todavía.</p>;
+  return (
+    <div className="overflow-x-auto border border-slate-200 rounded-lg">
+      <table className="min-w-full text-xs">
+        <thead className="bg-slate-50 text-slate-500">
+          <tr>{["Registrado (automático)", "Campo", "Antes", "Después", "Fecha del hecho", "Motivo", "Usuario"].map((h) => <th key={h} className="text-left px-2 py-1.5 font-medium whitespace-nowrap">{h}</th>)}</tr>
+        </thead>
+        <tbody>
+          {items.map((h) => (
+            <tr key={h.id} className="border-t border-slate-100 align-top">
+              <td className="px-2 py-1.5 whitespace-nowrap text-slate-600">{fmtDT(h.fecha)}</td>
+              <td className="px-2 py-1.5 font-medium text-slate-700">{h.campo}</td>
+              <td className="px-2 py-1.5 text-slate-500 max-w-[160px] truncate" title={h.valor_anterior || ""}>{h.valor_anterior || "—"}</td>
+              <td className="px-2 py-1.5 text-slate-700 max-w-[160px] truncate" title={h.valor_nuevo || ""}>{h.valor_nuevo || "—"}</td>
+              <td className="px-2 py-1.5 whitespace-nowrap">{fmtD(h.fecha_hecho)}</td>
+              <td className="px-2 py-1.5">{h.motivo ? <span className="px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200">{h.motivo}</span> : ""}</td>
+              <td className="px-2 py-1.5 text-slate-500">{h.usuario || ""}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// Gestión del estado de una NC: acción inmediata, requiere acción, estado — con historial y trazabilidad.
 function CumplimientoEditor({ registros, recargarRegistros }) {
   const [sel, setSel] = useState("");
-  const [cumplido, setCumplido] = useState("Sí");
-  const [fecha, setFecha] = useState(new Date().toISOString().slice(0, 10));
+  const [det, setDet] = useState(null);
+  const [requiere, setRequiere] = useState("");
+  const [cumplido, setCumplido] = useState("");
+  const [fecha, setFecha] = useState("");
+  const [estado, setEstado] = useState("Abierta");
+  const [motivo, setMotivo] = useState(MOTIVO_NORMAL);
   const [msg, setMsg] = useState(null);
   const [guardando, setGuardando] = useState(false);
-  const lista = registros.filter((r) => r.tipo !== TIPO_OM && r.estado !== "Cerrada" && r.cumplido !== "Sí");
+  const hoy = hoyISO();
+  const lista = registros.filter((r) => r.tipo !== TIPO_OM && r.estado !== "Cerrada");
+
+  async function elegir(num) {
+    setSel(num); setDet(null); setMsg(null);
+    if (!num) return;
+    try {
+      const d = await apiGet(`/nc/${num}`);
+      setDet(d);
+      setRequiere(d.requiere_accion || "");
+      setCumplido(d.cumplido || "");
+      setFecha(d.fecha_cumplimiento ? String(d.fecha_cumplimiento).slice(0, 10) : "");
+      setEstado((d.analisis && d.analisis.estado) || "Abierta");
+      setMotivo(MOTIVO_NORMAL);
+    } catch (e) { setMsg({ e: true, t: "No se pudo cargar la NC: " + e.message }); }
+  }
+  // Si la fecha del hecho es anterior a hoy, el registro es posterior al hecho: se sugiere dejar constancia.
+  useEffect(() => { if (cumplido === "Sí" && fecha && fecha < hoy) setMotivo(MOTIVO_REGULARIZACION); }, [cumplido, fecha]);
+
+  const an = det && det.analisis;
+  const checks = [
+    { ok: !!requiere, t: "Definido si requiere acción correctiva" },
+    { ok: cumplido === "Sí" && !!fecha, t: "Acción inmediata cumplida, con fecha real" },
+    ...(requiere === "Sí" ? [
+      { ok: !!(an && an.causa_raiz), t: "Causa raíz (5 porqués) — se carga más abajo en «Análisis»" },
+      { ok: !!(an && an.fecha_verif_cumplimiento && an.evidencia_cumplimiento), t: "Verificación de cumplimiento (fecha y evidencia)" },
+      { ok: !!(an && an.fecha_verif_eficacia && an.evidencia_eficacia), t: "Verificación de eficacia (fecha y evidencia)" },
+    ] : []),
+  ];
+  const puedeCerrar = checks.every((c) => c.ok);
 
   async function guardar() {
     if (!sel) { setMsg({ e: true, t: "Elegí la NC." }); return; }
-    setGuardando(true);
-    setMsg(null);
+    setGuardando(true); setMsg(null);
     try {
-      await apiPut(`/nc/${sel}/cumplimiento`, { cumplido, fechaCumplimiento: cumplido === "Sí" ? fecha : null });
+      await apiPut(`/nc/${sel}/gestion`, {
+        requiereAccion: requiere || undefined, cumplido: cumplido || undefined,
+        fechaCumplimiento: cumplido === "Sí" ? fecha : null, estado, motivo: motivo === MOTIVO_NORMAL ? null : motivo,
+      });
       const reg = registros.find((r) => String(r.numero) === String(sel)) || {};
-      const detalle = await apiGet(`/nc/${sel}`);
-      const b2 = mapAnalisisFromApi(detalle.analisis);
-      const datos = armarDatosWord({ ...reg, cumplido, fechaCumplimiento: cumplido === "Sí" ? fecha : "" }, reg.numeroMostrar || sel, b2);
-      const ok = await guardarSnapshotWord(sel, datos, false);
-      setMsg({ e: !ok, t: ok ? "Acción marcada como cumplida y Q.21 actualizado." : "Se guardó el cumplimiento, pero no se pudo actualizar el Word del Q.21." });
-      setSel("");
+      const d2 = await apiGet(`/nc/${sel}`);
+      const b2 = mapAnalisisFromApi(d2.analisis);
+      const datos = armarDatosWord({ ...reg, requiereAccion: requiere, cumplido, fechaCumplimiento: cumplido === "Sí" ? fecha : "" }, reg.numeroMostrar || sel, b2);
+      const ok = await guardarSnapshotWord(sel, datos, estado === "Cerrada");
+      setMsg({ e: !ok, t: ok ? "Guardado y Q.21 actualizado." + (estado === "Cerrada" ? " La NC quedó cerrada y su documento congelado." : "") : "Se guardó, pero no se pudo actualizar el Word del Q.21." });
+      setDet(d2);
       await recargarRegistros();
     } catch (e) {
-      setMsg({ e: true, t: "No se pudo guardar: " + e.message });
-    } finally {
-      setGuardando(false);
-    }
+      setMsg({ e: true, t: e.message });
+    } finally { setGuardando(false); }
   }
 
+  const btn = (act, v, set, color = "bg-emerald-600 text-white border-emerald-600") => (
+    <button key={v} type="button" onClick={() => set(v)} className={`px-3 py-1.5 rounded-md text-sm border ${act === v ? color : "bg-white text-slate-600 border-slate-300"}`}>{v}</button>
+  );
+  const sem = det ? semaforoNC({ estado, cumplido, fechaProgramada: det.fecha_programada }) : null;
+
   return (
-    <div className="border border-emerald-200 bg-emerald-50/50 rounded-lg p-4">
-      <h3 className="text-sm font-semibold text-slate-800 mb-1">Marcar la acción inmediata como cumplida</h3>
-      <p className="text-xs text-slate-500 mb-3">Actualiza «Cumplido» y la fecha de cumplimiento del informe y vuelve a generar el Q.21 con el punto azul en la opción elegida.</p>
-      <div className="flex flex-wrap gap-2 items-end">
-        <select value={sel} onChange={(e) => setSel(e.target.value)} className="border border-slate-300 rounded-md px-3 py-2 text-sm bg-white min-w-[260px] flex-1">
-          <option value="">Elegí la NC con acción pendiente…</option>
-          {lista.map((r) => (
-            <option key={r.numero} value={r.numero}>Nº {r.numeroMostrar} · {r.producto} {r.cliente ? "· " + r.cliente : ""}</option>
-          ))}
-        </select>
-        {["Sí", "No"].map((v) => (
-          <button key={v} type="button" onClick={() => setCumplido(v)} className={`px-3 py-2 rounded-md text-sm border ${cumplido === v ? "bg-emerald-600 text-white border-emerald-600" : "bg-white text-slate-600 border-slate-300"}`}>{v}</button>
-        ))}
-        {cumplido === "Sí" && <input type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} className="border border-slate-300 rounded-md px-3 py-2 text-sm bg-white" />}
-        <button type="button" onClick={guardar} disabled={guardando} className="px-4 py-2 rounded-md text-sm bg-slate-800 text-white disabled:opacity-50">{guardando ? "Guardando…" : "Guardar"}</button>
+    <div className="border border-emerald-200 bg-emerald-50/50 rounded-lg p-4 space-y-3">
+      <div>
+        <h3 className="text-sm font-semibold text-slate-800">Gestión del estado de la NC</h3>
+        <p className="text-xs text-slate-500">Elegí la NC, cargá lo que realmente ocurrió y su fecha. Cada cambio queda en el historial con la fecha de registro automática.</p>
       </div>
-      {msg && <p className={`text-xs mt-2 ${msg.e ? "text-red-600" : "text-emerald-700"}`}>{msg.t}</p>}
+      <select value={sel} onChange={(e) => elegir(e.target.value)} className="border border-slate-300 rounded-md px-3 py-2 text-sm bg-white w-full">
+        <option value="">Elegí la NC a gestionar…</option>
+        {lista.map((r) => {
+          const s2 = semaforoNC(r);
+          return <option key={r.numero} value={r.numero}>{s2.c} Nº {r.numeroMostrar} · {r.producto} {r.cliente ? "· " + r.cliente : ""} · {r.estado || "Abierta"}</option>;
+        })}
+      </select>
+
+      {det && (
+        <>
+          <div className="text-xs text-slate-600 flex flex-wrap gap-x-4 gap-y-1">
+            <span>{sem.c} {sem.t}</span>
+            <span>Fecha programada de disposición: <b>{fmtD(det.fecha_programada) || "—"}</b></span>
+            <span>Fecha de registro de la NC: <b>{fmtDT(det.creado_en)}</b></span>
+          </div>
+          <div className="grid sm:grid-cols-2 gap-3">
+            <div>
+              <p className="text-xs font-medium text-slate-600 mb-1">¿Requiere acción correctiva?</p>
+              <div className="flex gap-2">{btn(requiere, "Sí", setRequiere, "bg-slate-800 text-white border-slate-800")}{btn(requiere, "No", setRequiere, "bg-slate-800 text-white border-slate-800")}</div>
+            </div>
+            <div>
+              <p className="text-xs font-medium text-slate-600 mb-1">¿Acción inmediata cumplida?</p>
+              <div className="flex gap-2 items-center">
+                {btn(cumplido, "Sí", setCumplido)}{btn(cumplido, "No", setCumplido, "bg-slate-500 text-white border-slate-500")}
+                {cumplido === "Sí" && <input type="date" max={hoy} value={fecha} onChange={(e) => setFecha(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1.5 text-sm bg-white" />}
+              </div>
+              {cumplido === "Sí" && <p className="text-[11px] text-slate-400 mt-1">Fecha del hecho: la real, respaldada por evidencia. No puede ser futura.</p>}
+            </div>
+          </div>
+          <div>
+            <p className="text-xs font-medium text-slate-600 mb-1">Estado</p>
+            <div className="flex flex-wrap gap-2">
+              {ESTADOS.map((e) => {
+                const bloq = e === "Cerrada" && !puedeCerrar;
+                return (
+                  <button key={e} type="button" disabled={bloq} onClick={() => setEstado(e)}
+                    className={`px-3 py-1.5 rounded-md text-sm border ${estado === e ? "bg-slate-800 text-white border-slate-800" : bloq ? "bg-slate-50 text-slate-300 border-slate-200 cursor-not-allowed" : "bg-white text-slate-600 border-slate-300"}`}>{e}</button>
+                );
+              })}
+            </div>
+            <ul className="mt-2 text-[11px] space-y-0.5">
+              {checks.map((c) => <li key={c.t} className={c.ok ? "text-emerald-700" : "text-slate-400"}>{c.ok ? "✔" : "○"} {c.t}</li>)}
+            </ul>
+          </div>
+          <div>
+            <p className="text-xs font-medium text-slate-600 mb-1">Motivo del cambio (queda en el historial)</p>
+            <select value={motivo} onChange={(e) => setMotivo(e.target.value)} className="border border-slate-300 rounded-md px-3 py-1.5 text-sm bg-white">
+              <option>{MOTIVO_NORMAL}</option>
+              <option>{MOTIVO_REGULARIZACION}</option>
+            </select>
+            <p className="text-[11px] text-slate-400 mt-1">La fecha y hora de registro las pone el sistema y no se pueden editar.</p>
+          </div>
+          <button type="button" onClick={guardar} disabled={guardando} className="px-4 py-2 rounded-md text-sm bg-slate-800 text-white disabled:opacity-50">{guardando ? "Guardando…" : "Guardar gestión"}</button>
+          <div>
+            <p className="text-xs font-medium text-slate-600 mb-1">Historial de esta NC</p>
+            <HistorialNC items={det.historial} />
+          </div>
+        </>
+      )}
+      {msg && <p className={`text-xs ${msg.e ? "text-red-600" : "text-emerald-700"}`}>{msg.t}</p>}
     </div>
   );
 }
