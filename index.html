@@ -120,15 +120,27 @@ function mapNCFromApi(row) {
     oti: row.oti || "",
     cantidadPiezas: row.cantidad_piezas || "",
     disposicion: row.disposicion,
-    fechaProgramada: row.fecha_programada || "",
+    fechaProgramada: normF(row.fecha_programada),
     cumplido: row.cumplido || "",
-    fechaCumplimiento: row.fecha_cumplimiento || "",
+    fechaCumplimiento: normF(row.fecha_cumplimiento),
     requiereAccion: row.requiere_accion || "",
     estado: row.estado || "Abierta",
     clasificacion: row.clasificacion || "",
     conDevolucion: row.con_devolucion === true ? "Sí" : row.con_devolucion === false ? "No" : "",
   };
 }
+
+// Normaliza cualquier fecha (ISO, "2026-05-29T00:00:00.000Z", "Fri May 29 2026 ...") a YYYY-MM-DD para los <input type=date> y el guardado
+const normF = (v) => {
+  if (!v) return "";
+  const t = String(v).trim();
+  const m = t.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  if (!/\d{4}/.test(t)) return "";
+  const d = new Date(t);
+  if (isNaN(d)) return "";
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
 
 function mapAnalisisFromApi(row) {
   if (!row) return null;
@@ -140,10 +152,10 @@ function mapAnalisisFromApi(row) {
     documentoDetalle: row.documento_detalle || "",
     accionDescripcion: row.accion_descripcion || "",
     responsable: row.responsable || "",
-    fechaProgramadaAccion: row.fecha_programada_accion || "",
-    fechaVerifCumplimiento: row.fecha_verif_cumplimiento || "",
+    fechaProgramadaAccion: normF(row.fecha_programada_accion),
+    fechaVerifCumplimiento: normF(row.fecha_verif_cumplimiento),
     evidenciaCumplimiento: row.evidencia_cumplimiento || "",
-    fechaVerifEficacia: row.fecha_verif_eficacia || "",
+    fechaVerifEficacia: normF(row.fecha_verif_eficacia),
     evidenciaEficacia: row.evidencia_eficacia || "",
     noRequiereNotificacion: row.no_requiere_notificacion || false,
     estado: row.estado || "Abierta",
@@ -1499,7 +1511,7 @@ function Bloque2({ registros, recargarRegistros }) {
     setGuardandoB2(true);
     setGuardadoOkB2(false);
     try {
-      await apiPut(`/nc/${b2.numeroNC}/analisis`, b2);
+      await apiPut(`/nc/${b2.numeroNC}/analisis`, { ...b2, fechaProgramadaAccion: normF(b2.fechaProgramadaAccion), fechaVerifCumplimiento: normF(b2.fechaVerifCumplimiento), fechaVerifEficacia: normF(b2.fechaVerifEficacia) });
       if (!b2.noRequiereNotificacion) {
         for (const n of notificaciones) {
           if (n.nombre && n.nombre.trim()) {
