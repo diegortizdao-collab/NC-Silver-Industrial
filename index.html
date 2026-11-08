@@ -751,6 +751,25 @@ function base64ToUint8Array(base64) {
   return bytes;
 }
 
+// Los cuadraditos de la plantilla Q.21 (checkboxes) se convierten en un punto azul en la opción elegida.
+const _norm = (v) => String(v || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+function marcarOpcionesQ21(xml, d) {
+  const sel = [];
+  const t = _norm(d.tipoSeleccionado);
+  sel.push(t.startsWith("hallazgo") ? "1077" : t.startsWith("op") ? "1078" : t.startsWith("no conf") ? "1076" : null);
+  const c = _norm(d.categoriaSeleccionada);
+  sel.push({ producto: "1079", proceso: "1083", proveedor: "1080", cliente: "1081", otros: "1082" }[c] || null);
+  const cu = _norm(d.cumplidoTexto);
+  sel.push(cu === "si" ? "1046" : cu === "no" ? "1047" : null);
+  const rq = _norm(d.requiereTexto);
+  sel.push(rq === "si" ? "1048" : rq === "no" ? "1049" : null);
+  sel.filter(Boolean).forEach((n) => {
+    const re = new RegExp(`<v:rect id="_x0000_s${n}" style="([^"]*)"\\s*/>`);
+    xml = xml.replace(re, (m, st) => `<v:oval id="_x0000_s${n}" style="${st}" fillcolor="#1f6fd0" strokecolor="#174a96" strokeweight=".5pt"/>`);
+  });
+  return xml;
+}
+
 async function generarWordBlobNC(data) {
   const [{ default: PizZip }, { default: Docxtemplater }] = await Promise.all([
     import("https://esm.sh/pizzip@3.1.6"),
@@ -760,6 +779,10 @@ async function generarWordBlobNC(data) {
   const zip = new PizZip(bytes);
   const doc = new Docxtemplater(zip, { paragraphLoop: true, linebreaks: true });
   doc.render(data);
+  try {
+    const zz = doc.getZip();
+    zz.file("word/document.xml", marcarOpcionesQ21(zz.file("word/document.xml").asText(), data));
+  } catch (e) { console.warn("No se pudieron marcar las opciones:", e.message); }
   return doc.getZip().generate({
     type: "blob",
     mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
