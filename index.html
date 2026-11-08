@@ -770,6 +770,52 @@ function marcarOpcionesQ21(xml, d) {
   return xml;
 }
 
+// ---- Firma digital de Gestión de Calidad (imagen guardada en R2, vía el Worker; solo cuentas autorizadas) ----
+let _firmaCalidadP = null;
+function obtenerFirmaCalidad() {
+  if (_firmaCalidadP) return _firmaCalidadP;
+  _firmaCalidadP = (async () => {
+    try {
+      const lr = await fetch(`${API_BASE}/firmas`);
+      if (!lr.ok) return null;
+      const lista = await lr.json();
+      const f = lista.find((x) => /diego|ortiz/i.test(`${x.id} ${x.nombre}`));
+      if (!f) return null;
+      const r = await fetch(`${API_BASE}/firmas/${encodeURIComponent(f.id)}`);
+      if (!r.ok) return null;
+      const b = new Uint8Array(await r.arrayBuffer());
+      const dv = new DataView(b.buffer);
+      return { bytes: b, w: dv.getUint32(16), h: dv.getUint32(20) };
+    } catch (e) { return null; }
+  })();
+  return _firmaCalidadP;
+}
+function insertarFirmaCalidad(zip, xml, firma, data) {
+  const alto = 330000; // ~0,9 cm
+  let ancho = Math.round(alto * (firma.w / firma.h));
+  let altoF = alto;
+  if (ancho > 1080000) { ancho = 1080000; altoF = Math.round(ancho * (firma.h / firma.w)); }
+  // Imagen flotante (no empuja el texto: el Q.21 sigue entrando en una hoja). dx = distancia desde el margen izquierdo.
+  const run = (dx) => `<w:r><w:drawing><wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="251700000" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="column"><wp:posOffset>${dx}</wp:posOffset></wp:positionH><wp:positionV relativeFrom="paragraph"><wp:posOffset>-190000</wp:posOffset></wp:positionV><wp:extent cx="${ancho}" cy="${altoF}"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:wrapNone/><wp:docPr id="9101" name="Firma Gestión de Calidad"/><wp:cNvGraphicFramePr/><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="9101" name="firma_calidad.png"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="rIdFirmaCalidad"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${ancho}" cy="${altoF}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>`;
+  const paras = xml.split("</w:p>");
+  let idx = 0, usada = false;
+  for (let i = 0; i < paras.length; i++) {
+    if (/FIRMA DE GESTI/.test(paras[i].replace(/<[^>]+>/g, ""))) {
+      const verificada = idx === 0 ? data.fechaVerifCumplimiento : data.fechaVerifEficacia;
+      idx++;
+      if (verificada) { paras[i] += run(idx === 1 ? 5350000 : 4050000); usada = true; }
+    }
+  }
+  if (!usada) return xml;
+  zip.file("word/media/firma_calidad.png", firma.bytes);
+  const relsPath = "word/_rels/document.xml.rels";
+  const rels = zip.file(relsPath).asText();
+  if (!rels.includes("rIdFirmaCalidad")) {
+    zip.file(relsPath, rels.replace("</Relationships>", `<Relationship Id="rIdFirmaCalidad" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/firma_calidad.png"/></Relationships>`));
+  }
+  return paras.join("</w:p>");
+}
+
 async function generarWordBlobNC(data) {
   const [{ default: PizZip }, { default: Docxtemplater }] = await Promise.all([
     import("https://esm.sh/pizzip@3.1.6"),
@@ -781,7 +827,12 @@ async function generarWordBlobNC(data) {
   doc.render(data);
   try {
     const zz = doc.getZip();
-    zz.file("word/document.xml", marcarOpcionesQ21(zz.file("word/document.xml").asText(), data));
+    let xmlF = marcarOpcionesQ21(zz.file("word/document.xml").asText(), data);
+    if (data.fechaVerifCumplimiento || data.fechaVerifEficacia) {
+      const firma = await obtenerFirmaCalidad();
+      if (firma) xmlF = insertarFirmaCalidad(zz, xmlF, firma, data);
+    }
+    zz.file("word/document.xml", xmlF);
   } catch (e) { console.warn("No se pudieron marcar las opciones:", e.message); }
   return doc.getZip().generate({
     type: "blob",
@@ -961,6 +1012,57 @@ function ClasificacionEditor({ registro, recargarRegistros }) {
   );
 }
 
+function CumplimientoEditor({ registros, recargarRegistros }) {
+  const [sel, setSel] = useState("");
+  const [cumplido, setCumplido] = useState("Sí");
+  const [fecha, setFecha] = useState(new Date().toISOString().slice(0, 10));
+  const [msg, setMsg] = useState(null);
+  const [guardando, setGuardando] = useState(false);
+  const lista = registros.filter((r) => r.tipo !== TIPO_OM && r.estado !== "Cerrada" && r.cumplido !== "Sí");
+
+  async function guardar() {
+    if (!sel) { setMsg({ e: true, t: "Elegí la NC." }); return; }
+    setGuardando(true);
+    setMsg(null);
+    try {
+      await apiPut(`/nc/${sel}/cumplimiento`, { cumplido, fechaCumplimiento: cumplido === "Sí" ? fecha : null });
+      const reg = registros.find((r) => String(r.numero) === String(sel)) || {};
+      const detalle = await apiGet(`/nc/${sel}`);
+      const b2 = mapAnalisisFromApi(detalle.analisis);
+      const datos = armarDatosWord({ ...reg, cumplido, fechaCumplimiento: cumplido === "Sí" ? fecha : "" }, reg.numeroMostrar || sel, b2);
+      const ok = await guardarSnapshotWord(sel, datos, false);
+      setMsg({ e: !ok, t: ok ? "Acción marcada como cumplida y Q.21 actualizado." : "Se guardó el cumplimiento, pero no se pudo actualizar el Word del Q.21." });
+      setSel("");
+      await recargarRegistros();
+    } catch (e) {
+      setMsg({ e: true, t: "No se pudo guardar: " + e.message });
+    } finally {
+      setGuardando(false);
+    }
+  }
+
+  return (
+    <div className="border border-emerald-200 bg-emerald-50/50 rounded-lg p-4">
+      <h3 className="text-sm font-semibold text-slate-800 mb-1">Marcar la acción inmediata como cumplida</h3>
+      <p className="text-xs text-slate-500 mb-3">Actualiza «Cumplido» y la fecha de cumplimiento del informe y vuelve a generar el Q.21 con el punto azul en la opción elegida.</p>
+      <div className="flex flex-wrap gap-2 items-end">
+        <select value={sel} onChange={(e) => setSel(e.target.value)} className="border border-slate-300 rounded-md px-3 py-2 text-sm bg-white min-w-[260px] flex-1">
+          <option value="">Elegí la NC con acción pendiente…</option>
+          {lista.map((r) => (
+            <option key={r.numero} value={r.numero}>Nº {r.numeroMostrar} · {r.producto} {r.cliente ? "· " + r.cliente : ""}</option>
+          ))}
+        </select>
+        {["Sí", "No"].map((v) => (
+          <button key={v} type="button" onClick={() => setCumplido(v)} className={`px-3 py-2 rounded-md text-sm border ${cumplido === v ? "bg-emerald-600 text-white border-emerald-600" : "bg-white text-slate-600 border-slate-300"}`}>{v}</button>
+        ))}
+        {cumplido === "Sí" && <input type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} className="border border-slate-300 rounded-md px-3 py-2 text-sm bg-white" />}
+        <button type="button" onClick={guardar} disabled={guardando} className="px-4 py-2 rounded-md text-sm bg-slate-800 text-white disabled:opacity-50">{guardando ? "Guardando…" : "Guardar"}</button>
+      </div>
+      {msg && <p className={`text-xs mt-2 ${msg.e ? "text-red-600" : "text-emerald-700"}`}>{msg.t}</p>}
+    </div>
+  );
+}
+
 function Bloque2({ registros, recargarRegistros }) {
   const [b2, setB2] = useState(emptyBloque2);
   const [notificaciones, setNotificaciones] = useState([{ nombre: "", fecha: "" }]);
@@ -1072,6 +1174,7 @@ function Bloque2({ registros, recargarRegistros }) {
 
   return (
     <div className="bg-white rounded-lg border border-slate-200 p-5 space-y-6">
+      <CumplimientoEditor registros={registros} recargarRegistros={recargarRegistros} />
       <div className="border-b border-slate-100 pb-3">
         <label className="block text-sm font-medium text-slate-700 mb-1">Nº de NC a gestionar</label>
         <select
