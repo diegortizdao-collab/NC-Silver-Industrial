@@ -1203,7 +1203,8 @@ function CumplimientoEditor({ registros, recargarRegistros }) {
   const [msg, setMsg] = useState(null);
   const [guardando, setGuardando] = useState(false);
   const hoy = hoyISO();
-  const lista = registros.filter((r) => r.tipo !== TIPO_OM && r.estado !== "Cerrada");
+  const [verCerradas, setVerCerradas] = useState(false);
+  const lista = registros.filter((r) => r.tipo !== TIPO_OM && (verCerradas || r.estado !== "Cerrada"));
 
   async function elegir(num) {
     setSel(num); setDet(null); setMsg(null);
@@ -1213,7 +1214,7 @@ function CumplimientoEditor({ registros, recargarRegistros }) {
       setDet(d);
       setRequiere(d.requiere_accion || "");
       setCumplido(d.cumplido || "");
-      setFecha(d.fecha_cumplimiento ? String(d.fecha_cumplimiento).slice(0, 10) : "");
+      setFecha(normF(d.fecha_cumplimiento));
       setEstado((d.analisis && d.analisis.estado) || "Abierta");
       setMotivo(MOTIVO_NORMAL);
     } catch (e) { setMsg({ e: true, t: "No se pudo cargar la NC: " + e.message }); }
@@ -1265,6 +1266,7 @@ function CumplimientoEditor({ registros, recargarRegistros }) {
         <h3 className="text-sm font-semibold text-slate-800">Gestión del estado de la NC</h3>
         <p className="text-xs text-slate-500">Elegí la NC, cargá lo que realmente ocurrió y su fecha. Cada cambio queda en el historial con la fecha de registro automática.</p>
       </div>
+      <label className="flex items-center gap-2 text-xs text-slate-600"><input type="checkbox" checked={verCerradas} onChange={(e) => setVerCerradas(e.target.checked)} /> Incluir NC cerradas (para consultar el historial o reabrir)</label>
       <select value={sel} onChange={(e) => elegir(e.target.value)} className="border border-slate-300 rounded-md px-3 py-2 text-sm bg-white w-full">
         <option value="">Elegí la NC a gestionar…</option>
         {lista.map((r) => {
