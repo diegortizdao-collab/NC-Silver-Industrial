@@ -142,6 +142,41 @@ const normF = (v) => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 };
 
+// Campo de fecha DD/MM/AAAA (independiente del idioma del navegador). Emite {target:{value:"YYYY-MM-DD"}} (o "" si está incompleta/inválida)
+function FechaInput({ value, onChange, max, min, className, disabled, placeholder }) {
+  const iso = normF(value);
+  const aTxt = (v) => (v ? `${v.slice(8, 10)}/${v.slice(5, 7)}/${v.slice(0, 4)}` : "");
+  const parse = (t) => {
+    const m = t.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+    if (!m) return "";
+    const d = new Date(Date.UTC(+m[3], +m[2] - 1, +m[1]));
+    return d.getUTCFullYear() === +m[3] && d.getUTCMonth() === +m[2] - 1 && d.getUTCDate() === +m[1] ? `${m[3]}-${m[2]}-${m[1]}` : "";
+  };
+  const [txt, setTxt] = React.useState(aTxt(iso));
+  const ref = React.useRef(null);
+  React.useEffect(() => { if (iso !== parse(txt)) setTxt(aTxt(iso)); }, [iso]);
+  const fuera = iso && ((max && iso > max) || (min && iso < min));
+  const emitir = (v) => onChange && onChange({ target: { value: v } });
+  const cambio = (e) => {
+    const d = e.target.value.replace(/\D/g, "").slice(0, 8);
+    const t = d.length > 4 ? `${d.slice(0, 2)}/${d.slice(2, 4)}/${d.slice(4)}` : d.length > 2 ? `${d.slice(0, 2)}/${d.slice(2)}` : d;
+    setTxt(t);
+    const v = parse(t);
+    emitir(v && ((max && v > max) || (min && v < min)) ? "" : v);
+  };
+  return (
+    <div className="relative">
+      <input type="text" inputMode="numeric" value={txt} onChange={cambio} disabled={disabled} placeholder={placeholder || "dd/mm/aaaa"} maxLength={10}
+        title={fuera ? "Fecha fuera de rango (no puede ser futura)" : "Formato dd/mm/aaaa"}
+        className={`${className || "border border-slate-300 rounded-md px-3 py-2 text-sm"} w-full pr-8 ${txt.length === 10 && !parse(txt) ? "border-red-400" : ""}`} />
+      <button type="button" tabIndex={-1} disabled={disabled} onClick={() => ref.current && (ref.current.showPicker ? ref.current.showPicker() : ref.current.focus())}
+        className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700" aria-label="Abrir calendario">📅</button>
+      <input ref={ref} type="date" tabIndex={-1} max={max} min={min} value={iso} onChange={(e) => { setTxt(aTxt(e.target.value)); emitir(e.target.value); }}
+        className="absolute right-0 bottom-0 w-0 h-0 opacity-0 pointer-events-none" />
+    </div>
+  );
+}
+
 function mapAnalisisFromApi(row) {
   if (!row) return null;
   return {
@@ -581,8 +616,8 @@ function Bloque1({ registros, recargarRegistros }) {
         <div className="grid grid-cols-3 gap-4">
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">Fecha de producción</label>
-            <input
-              type="date"
+            <FechaInput
+              
               value={form.fechaProduccion}
               onChange={(e) => update("fechaProduccion", e.target.value)}
               className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm"
@@ -634,8 +669,8 @@ function Bloque1({ registros, recargarRegistros }) {
         <div className="grid grid-cols-2 gap-4">
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">Fecha programada de disposición</label>
-            <input
-              type="date"
+            <FechaInput
+              
               value={form.fechaProgramada}
               onChange={(e) => update("fechaProgramada", e.target.value)}
               className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm"
@@ -665,8 +700,8 @@ function Bloque1({ registros, recargarRegistros }) {
         {form.cumplido === "Sí" && (
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">Fecha de cumplimiento</label>
-            <input
-              type="date"
+            <FechaInput
+              
               value={form.fechaCumplimiento}
               onChange={(e) => update("fechaCumplimiento", e.target.value)}
               className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm"
@@ -1254,7 +1289,7 @@ function CumplimientoEditor({ registros, recargarRegistros }) {
               <p className="text-xs font-medium text-slate-600 mb-1">¿Acción inmediata cumplida?</p>
               <div className="flex gap-2 items-center">
                 {btn(cumplido, "Sí", setCumplido)}{btn(cumplido, "No", setCumplido, "bg-slate-500 text-white border-slate-500")}
-                {cumplido === "Sí" && <input type="date" max={hoy} value={fecha} onChange={(e) => setFecha(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1.5 text-sm bg-white" />}
+                {cumplido === "Sí" && <FechaInput  max={hoy} value={fecha} onChange={(e) => setFecha(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1.5 text-sm bg-white" />}
               </div>
               {cumplido === "Sí" && <p className="text-[11px] text-slate-400 mt-1">Fecha del hecho: la real, respaldada por evidencia. No puede ser futura.</p>}
             </div>
@@ -1408,15 +1443,15 @@ function GestionOM({ registros, recargarRegistros }) {
           </div>
           <div className="grid sm:grid-cols-3 gap-3">
             <div className="sm:col-span-2"><label className={lbl}>Plan de implementación</label><textarea rows={2} value={f.plan} onChange={(e) => set("plan", e.target.value)} className={inp} /></div>
-            <div><label className={lbl}>Fecha prevista de implementación</label><input type="date" value={f.fechaPrevista} onChange={(e) => set("fechaPrevista", e.target.value)} className={inp} /></div>
+            <div><label className={lbl}>Fecha prevista de implementación</label><FechaInput  value={f.fechaPrevista} onChange={(e) => set("fechaPrevista", e.target.value)} className={inp} /></div>
           </div>
           <div className="grid sm:grid-cols-3 gap-3 border-t border-sky-100 pt-3">
-            <div><label className={lbl}>Fecha de implementación (real)</label><input type="date" max={hoy} value={f.fImpl} onChange={(e) => set("fImpl", e.target.value)} className={inp} /></div>
-            <div><label className={lbl}>Fecha de verificación de la implementación</label><input type="date" max={hoy} value={f.fVerifImpl} onChange={(e) => set("fVerifImpl", e.target.value)} className={inp} /></div>
+            <div><label className={lbl}>Fecha de implementación (real)</label><FechaInput  max={hoy} value={f.fImpl} onChange={(e) => set("fImpl", e.target.value)} className={inp} /></div>
+            <div><label className={lbl}>Fecha de verificación de la implementación</label><FechaInput  max={hoy} value={f.fVerifImpl} onChange={(e) => set("fVerifImpl", e.target.value)} className={inp} /></div>
             <div className="sm:col-span-3"><label className={lbl}>Evidencia de la implementación</label><textarea rows={2} value={f.evImpl} onChange={(e) => set("evImpl", e.target.value)} className={inp} /></div>
           </div>
           <div className="grid sm:grid-cols-3 gap-3 border-t border-sky-100 pt-3">
-            <div><label className={lbl}>Verificación de vigencia a los 6 meses (fecha)</label><input type="date" max={hoy} value={f.fVig} onChange={(e) => set("fVig", e.target.value)} className={inp} /></div>
+            <div><label className={lbl}>Verificación de vigencia a los 6 meses (fecha)</label><FechaInput  max={hoy} value={f.fVig} onChange={(e) => set("fVig", e.target.value)} className={inp} /></div>
             <div><label className={lbl}>¿Sigue implementada?</label><div className="flex gap-2">{sn("vigencia", "Sí", "bg-emerald-600 text-white border-emerald-600")}{sn("vigencia", "No", "bg-rose-600 text-white border-rose-600")}</div></div>
             <div className="sm:col-span-3"><label className={lbl}>Evidencia de vigencia</label><textarea rows={2} value={f.evVig} onChange={(e) => set("evVig", e.target.value)} className={inp} /></div>
           </div>
@@ -1664,8 +1699,8 @@ function Bloque2({ registros, recargarRegistros }) {
           </div>
           <div>
             <label className="block text-xs text-slate-500 mb-1">Fecha programada de implementación</label>
-            <input
-              type="date"
+            <FechaInput
+              
               value={b2.fechaProgramadaAccion}
               onChange={(e) => update("fechaProgramadaAccion", e.target.value)}
               className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm"
@@ -1679,8 +1714,8 @@ function Bloque2({ registros, recargarRegistros }) {
         <div className="grid grid-cols-2 gap-4">
           <div>
             <label className="block text-xs text-slate-500 mb-1">Fecha verificación de cumplimiento</label>
-            <input
-              type="date"
+            <FechaInput
+              
               value={b2.fechaVerifCumplimiento}
               onChange={(e) => update("fechaVerifCumplimiento", e.target.value)}
               className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm"
@@ -1720,8 +1755,8 @@ function Bloque2({ registros, recargarRegistros }) {
           <label className="block text-xs text-slate-500 mb-1">
             Fecha verificación de eficacia <span className="text-slate-400">(la acción no volvió a repetirse)</span>
           </label>
-          <input
-            type="date"
+          <FechaInput
+            
             value={b2.fechaVerifEficacia}
             onChange={(e) => update("fechaVerifEficacia", e.target.value)}
             className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm"
@@ -1761,8 +1796,8 @@ function Bloque2({ registros, recargarRegistros }) {
                     placeholder="Nombre"
                     className="border border-slate-300 rounded-md px-3 py-2 text-sm"
                   />
-                  <input
-                    type="date"
+                  <FechaInput
+                    
                     value={n.fecha}
                     onChange={(e) => updateNotificacion(i, "fecha", e.target.value)}
                     className="border border-slate-300 rounded-md px-3 py-2 text-sm"
